@@ -30,9 +30,7 @@ references:
       description: "Database containing raw FHIR R4 bundles (JSON) to transform into OMOP CDM"
       privileges:
         - SELECT
-        - USAGE
       object_type: TABLE
-      multi_valued: true
       register_callback: core.register_reference
   - consumer_warehouse:
       label: "Warehouse"

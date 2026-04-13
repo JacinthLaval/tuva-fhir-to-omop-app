@@ -77,9 +77,10 @@ GRANT USAGE ON PROCEDURE core.register_reference(VARCHAR, VARCHAR, VARCHAR)
 -- ---------------------------------------------------------------------------
 -- Load modular sub-scripts
 -- ---------------------------------------------------------------------------
-EXECUTE IMMEDIATE FROM 'scripts/setup_seeds.sql';
-EXECUTE IMMEDIATE FROM 'scripts/setup_procs.sql';
-EXECUTE IMMEDIATE FROM 'scripts/setup_streamlit.sql';
+EXECUTE IMMEDIATE FROM 'setup_seeds.sql';
+EXECUTE IMMEDIATE FROM 'seed_vocabulary_data.sql';
+EXECUTE IMMEDIATE FROM 'setup_procs.sql';
+EXECUTE IMMEDIATE FROM 'setup_streamlit.sql';
 
 -- ---------------------------------------------------------------------------
 -- Grant app_admin all of app_user's access (superset)
