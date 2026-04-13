@@ -34,6 +34,13 @@ PUT file:///Users/toddcrosslin/Downloads/CoCoStuff/tuva-fhir-to-omop-app/scripts
 PUT file:///Users/toddcrosslin/Downloads/CoCoStuff/tuva-fhir-to-omop-app/scripts/load_seeds.py @TUVA_FHIR_TO_OMOP_PKG.STAGING.APP_CODE/scripts/ OVERWRITE=TRUE AUTO_COMPRESS=FALSE;
 PUT file:///Users/toddcrosslin/Downloads/CoCoStuff/tuva-fhir-to-omop-app/streamlit/main.py @TUVA_FHIR_TO_OMOP_PKG.STAGING.APP_CODE/streamlit/ OVERWRITE=TRUE AUTO_COMPRESS=FALSE;
 PUT file:///Users/toddcrosslin/Downloads/CoCoStuff/tuva-fhir-to-omop-app/streamlit/environment.yml @TUVA_FHIR_TO_OMOP_PKG.STAGING.APP_CODE/streamlit/ OVERWRITE=TRUE AUTO_COMPRESS=FALSE;
+PUT file:///Users/toddcrosslin/Downloads/CoCoStuff/tuva-fhir-to-omop-app/streamlit/.streamlit/config.toml @TUVA_FHIR_TO_OMOP_PKG.STAGING.APP_CODE/streamlit/.streamlit/ OVERWRITE=TRUE AUTO_COMPRESS=FALSE;
+PUT file:///Users/toddcrosslin/Downloads/CoCoStuff/tuva-fhir-to-omop-app/streamlit/static/Inter-Regular.ttf @TUVA_FHIR_TO_OMOP_PKG.STAGING.APP_CODE/streamlit/static/ OVERWRITE=TRUE AUTO_COMPRESS=FALSE;
+PUT file:///Users/toddcrosslin/Downloads/CoCoStuff/tuva-fhir-to-omop-app/streamlit/static/Inter-Medium.ttf @TUVA_FHIR_TO_OMOP_PKG.STAGING.APP_CODE/streamlit/static/ OVERWRITE=TRUE AUTO_COMPRESS=FALSE;
+PUT file:///Users/toddcrosslin/Downloads/CoCoStuff/tuva-fhir-to-omop-app/streamlit/static/Inter-SemiBold.ttf @TUVA_FHIR_TO_OMOP_PKG.STAGING.APP_CODE/streamlit/static/ OVERWRITE=TRUE AUTO_COMPRESS=FALSE;
+PUT file:///Users/toddcrosslin/Downloads/CoCoStuff/tuva-fhir-to-omop-app/streamlit/static/Inter-Bold.ttf @TUVA_FHIR_TO_OMOP_PKG.STAGING.APP_CODE/streamlit/static/ OVERWRITE=TRUE AUTO_COMPRESS=FALSE;
+PUT file:///Users/toddcrosslin/Downloads/CoCoStuff/tuva-fhir-to-omop-app/streamlit/static/JetBrainsMono-Regular.ttf @TUVA_FHIR_TO_OMOP_PKG.STAGING.APP_CODE/streamlit/static/ OVERWRITE=TRUE AUTO_COMPRESS=FALSE;
+PUT file:///Users/toddcrosslin/Downloads/CoCoStuff/tuva-fhir-to-omop-app/streamlit/static/JetBrainsMono-Medium.ttf @TUVA_FHIR_TO_OMOP_PKG.STAGING.APP_CODE/streamlit/static/ OVERWRITE=TRUE AUTO_COMPRESS=FALSE;
 
 -- ---------------------------------------------------------------------------
 -- 4. Create application in dev mode (uses stage directly, no version needed)
@@ -43,7 +50,6 @@ DROP APPLICATION IF EXISTS TUVA_FHIR_TO_OMOP_APP CASCADE;
 CREATE APPLICATION TUVA_FHIR_TO_OMOP_APP
     FROM APPLICATION PACKAGE TUVA_FHIR_TO_OMOP_PKG
     USING '@TUVA_FHIR_TO_OMOP_PKG.STAGING.APP_CODE'
-    DEBUG_MODE = TRUE
     COMMENT = 'FHIR-to-OMOP dev instance';
 
 -- ---------------------------------------------------------------------------
@@ -58,10 +64,10 @@ GRANT USAGE ON WAREHOUSE SI_DEMO_WH TO APPLICATION TUVA_FHIR_TO_OMOP_APP;
 -- 6. Bind references (FHIR source table + warehouse)
 -- ---------------------------------------------------------------------------
 CALL TUVA_FHIR_TO_OMOP_APP.CORE.REGISTER_REFERENCE(
-    'fhir_source_database', 'ADD', 'TRE_HEALTHCARE_DB.FHIR_STAGING.RAW_BUNDLES'
+    'fhir_source_database', 'SET', 'TRE_HEALTHCARE_DB.FHIR_STAGING.RAW_BUNDLES'
 );
 CALL TUVA_FHIR_TO_OMOP_APP.CORE.REGISTER_REFERENCE(
-    'consumer_warehouse', 'ADD', 'SI_DEMO_WH'
+    'consumer_warehouse', 'SET', 'SI_DEMO_WH'
 );
 
 SELECT 'Deployment complete — TUVA_FHIR_TO_OMOP_APP ready in dev mode' AS status;

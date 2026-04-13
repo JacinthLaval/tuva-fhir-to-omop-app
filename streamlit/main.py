@@ -8,54 +8,12 @@ st.set_page_config(page_title="Tuva FHIR-to-OMOP", page_icon="🏥", layout="wid
 
 session = get_active_session()
 
-TUVA_BLUE = "#1B2A4A"
-TUVA_ACCENT = "#29B5E8"
-
-st.markdown(f"""
-<style>
-    .main-header {{
-        background: linear-gradient(135deg, {TUVA_BLUE} 0%, #2C3E6B 100%);
-        padding: 1.5rem 2rem;
-        border-radius: 12px;
-        margin-bottom: 1.5rem;
-    }}
-    .main-header h1 {{color: white; margin: 0; font-size: 1.8rem;}}
-    .main-header p {{color: #A0B4D0; margin: 0.3rem 0 0 0; font-size: 0.95rem;}}
-    .metric-card {{
-        background: white;
-        border: 1px solid #E8ECF1;
-        border-radius: 10px;
-        padding: 1.2rem;
-        text-align: center;
-    }}
-    .metric-value {{font-size: 2rem; font-weight: 700; color: {TUVA_BLUE};}}
-    .metric-label {{font-size: 0.8rem; color: #6B7B8D; text-transform: uppercase;}}
-    .status-running {{color: #F39C12; font-weight: 600;}}
-    .status-completed {{color: #27AE60; font-weight: 600;}}
-    .status-failed {{color: #E74C3C; font-weight: 600;}}
-    .config-section {{
-        background: #F8FAFC;
-        border: 1px solid #E2E8F0;
-        border-radius: 8px;
-        padding: 1.2rem;
-        margin-bottom: 1rem;
-    }}
-    .pipeline-step {{
-        border-left: 3px solid {TUVA_ACCENT};
-        padding-left: 1rem;
-        margin-bottom: 0.5rem;
-    }}
-    .pipeline-step.done {{border-left-color: #27AE60;}}
-    .pipeline-step.fail {{border-left-color: #E74C3C;}}
-</style>
-""", unsafe_allow_html=True)
-
-st.markdown("""
-<div class="main-header">
-    <h1>Tuva FHIR-to-OMOP Transformer</h1>
-    <p>Vocabulary seeds from <a href="https://thetuvaproject.com/" style="color:#29B5E8;">Tuva Health</a> (Apache 2.0) + <a href="https://athena.ohdsi.org/" style="color:#29B5E8;">OHDSI Athena</a> &bull; OMOP mapping: custom-built &bull; Multi-cloud &bull; Your data never leaves your account</p>
-</div>
-""", unsafe_allow_html=True)
+st.title("Tuva FHIR-to-OMOP Transformer")
+st.caption(
+    "Vocabulary seeds from [Tuva Health](https://thetuvaproject.com/) (Apache 2.0) + "
+    "[OHDSI Athena](https://athena.ohdsi.org/) · OMOP mapping: custom-built · "
+    "Multi-cloud · Your data never leaves your account"
+)
 
 
 @st.cache_data(ttl=300)
@@ -111,13 +69,13 @@ def load_config():
 PROTECTED_SCHEMAS = {'OMOP_CDM'}
 
 tab_config, tab_run, tab_history, tab_vocab, tab_coverage, tab_quality, tab_explore = st.tabs([
-    "⚙️ Configure", "▶️ Run", "📊 History",
-    "📖 Vocabulary", "📊 Coverage", "🛡️ Quality", "🔍 Explore"
+    "Configure", "Run", "History",
+    "Vocabulary", "Coverage", "Quality", "Explore",
 ])
 
 with tab_config:
 
-    st.markdown("#### 📥 FHIR Source")
+    st.subheader("FHIR source")
 
     databases = list_databases()
 
@@ -169,7 +127,7 @@ with tab_config:
                 st.info("Table is empty or not accessible.")
 
     st.markdown("---")
-    st.markdown("#### 📤 OMOP Output Destination")
+    st.subheader("OMOP output destination")
 
     out_col1, out_col2 = st.columns(2)
     with out_col1:
@@ -230,7 +188,7 @@ with tab_config:
     if source_db and source_schema and source_table and output_schema:
         fq_table = f"{source_db}.{source_schema}.{source_table}"
 
-        st.markdown("#### Review")
+        st.subheader("Review")
         rev1, rev2 = st.columns(2)
         with rev1:
             st.markdown(f"""
@@ -246,7 +204,7 @@ with tab_config:
             - Tables: person, condition_occurrence, measurement, visit_occurrence, drug_exposure, procedure_occurrence, observation, death
             """)
 
-        if st.button("💾 Save Configuration", type="primary", use_container_width=True):
+        if st.button("Save configuration", type="primary", use_container_width=True):
             try:
                 session.sql(f"""
                     MERGE INTO app_state.configuration t
@@ -268,7 +226,7 @@ with tab_config:
         st.info("Select a source table and output schema above to continue.")
 
 with tab_run:
-    st.subheader("Run FHIR-to-OMOP Transformation")
+    st.subheader("Run FHIR-to-OMOP transformation")
 
     config = load_config()
 
@@ -292,7 +250,7 @@ with tab_run:
 
         run_col1, run_col2 = st.columns([1, 2])
         with run_col1:
-            run_btn = st.button("🚀 Run Full Pipeline", type="primary", use_container_width=True)
+            run_btn = st.button("Run full pipeline", type="primary", use_container_width=True)
         with run_col2:
             st.caption("Parse → Person → Condition → Measurement → Visit → Drug → Procedure → Observation → Death")
 
@@ -347,19 +305,19 @@ with tab_run:
                 st.error(f"Transformation failed: {e}")
 
         st.markdown("---")
-        st.subheader("Run Individual Mappers")
+        st.subheader("Individual mappers")
         st.caption("Run a single step of the pipeline for debugging or re-processing.")
 
         mappers = [
-            ("🔍 Parse FHIR", "core.parse_fhir_bundles", "parse"),
-            ("👤 Persons", "core.map_persons", "map"),
-            ("🩺 Conditions", "core.map_conditions", "map"),
-            ("📊 Measurements", "core.map_measurements", "map"),
-            ("🏥 Visits", "core.map_visits", "map"),
-            ("💊 Drugs", "core.map_drug_exposures", "map"),
-            ("🔧 Procedures", "core.map_procedures", "map"),
-            ("📋 Observations", "core.map_observations_qual", "map"),
-            ("⚰️ Death", "core.map_death", "map"),
+            ("Parse FHIR", "core.parse_fhir_bundles", "parse"),
+            ("Persons", "core.map_persons", "map"),
+            ("Conditions", "core.map_conditions", "map"),
+            ("Measurements", "core.map_measurements", "map"),
+            ("Visits", "core.map_visits", "map"),
+            ("Drugs", "core.map_drug_exposures", "map"),
+            ("Procedures", "core.map_procedures", "map"),
+            ("Observations", "core.map_observations_qual", "map"),
+            ("Death", "core.map_death", "map"),
         ]
         row1 = st.columns(5)
         row2 = st.columns(4)
@@ -382,10 +340,10 @@ with tab_run:
                         except Exception as e:
                             st.error(str(e))
     else:
-        st.info("👈 Configure your FHIR source in the **Configure** tab first.")
+        st.info("Configure your FHIR source in the **Configure** tab first.")
 
 with tab_history:
-    st.subheader("Transformation Run History")
+    st.subheader("Run history")
     try:
         history = session.sql("""
             SELECT run_id, started_at, completed_at, status,
@@ -421,13 +379,13 @@ VOCAB_MAP = {
 }
 
 with tab_vocab:
-    st.subheader("Vocabulary Browser")
+    st.subheader("Vocabulary browser")
 
     v_col1, v_col2 = st.columns([1, 2])
     with v_col1:
         selected_vocab = st.selectbox("Vocabulary", list(VOCAB_MAP.keys()))
     with v_col2:
-        search_term = st.text_input("🔎 Search by code or description", key="vocab_search")
+        search_term = st.text_input("Search by code or description", key="vocab_search", placeholder="Type to filter…")
 
     if selected_vocab:
         vocab_table = VOCAB_MAP[selected_vocab]
@@ -463,17 +421,13 @@ with tab_vocab:
 
             nav_col1, nav_col2, nav_col3 = st.columns([1, 2, 1])
             with nav_col1:
-                if st.button("⬅️ Previous", disabled=(page == 0), key="vocab_prev"):
+                if st.button("Previous", disabled=(page == 0), key="vocab_prev"):
                     st.session_state[f"vocab_page_{selected_vocab}"] = page - 1
                     st.rerun()
             with nav_col2:
-                st.markdown(
-                    f"<div style='text-align:center;color:#6B7B8D;'>Page {page + 1} of {total_pages} "
-                    f"({filtered_count:,} matching)</div>",
-                    unsafe_allow_html=True,
-                )
+                st.caption(f"Page {page + 1} of {total_pages} ({filtered_count:,} matching)")
             with nav_col3:
-                if st.button("Next ➡️", disabled=(page >= total_pages - 1), key="vocab_next"):
+                if st.button("Next", disabled=(page >= total_pages - 1), key="vocab_next"):
                     st.session_state[f"vocab_page_{selected_vocab}"] = page + 1
                     st.rerun()
 
@@ -492,7 +446,7 @@ COVERAGE_DOMAINS = {
 }
 
 with tab_coverage:
-    st.subheader("Coverage Report")
+    st.subheader("Coverage report")
 
     config = load_config()
     cov_schema = config.get('output_schema', 'OMOP_STAGING')
@@ -576,7 +530,7 @@ with tab_coverage:
 
 
 with tab_quality:
-    st.subheader("Data Quality")
+    st.subheader("Data quality")
 
     def run_quality_validation():
         try:
@@ -585,7 +539,7 @@ with tab_quality:
         except Exception as e:
             return None
 
-    if st.button("🔄 Re-run Validation", key="rerun_quality"):
+    if st.button("Re-run validation", key="rerun_quality"):
         st.session_state['quality_result'] = run_quality_validation()
 
     if 'quality_result' not in st.session_state:
@@ -636,7 +590,7 @@ with tab_quality:
 
 
 with tab_explore:
-    st.subheader("Explore OMOP CDM Output")
+    st.subheader("Explore OMOP CDM output")
 
     config = load_config()
     out_schema = config.get('output_schema', 'OMOP_STAGING')
@@ -668,13 +622,11 @@ with tab_explore:
 
 
 st.divider()
-st.markdown("""
-<div style="text-align:center; color:#6B7B8D; font-size:0.8rem;">
-    Tuva FHIR-to-OMOP &bull;
-    Vocabulary: <a href="https://thetuvaproject.com/" target="_blank">Tuva Health</a> (Apache 2.0) +
-    <a href="https://athena.ohdsi.org/" target="_blank">OHDSI Athena</a> &bull;
-    OMOP CDM mapping: custom-built &bull;
-    Built on <a href="https://www.snowflake.com/" target="_blank">Snowflake</a>
-    &bull; Multi-cloud: AWS | Azure | GCP
-</div>
-""", unsafe_allow_html=True)
+st.caption(
+    "Tuva FHIR-to-OMOP · "
+    "Vocabulary: [Tuva Health](https://thetuvaproject.com/) (Apache 2.0) + "
+    "[OHDSI Athena](https://athena.ohdsi.org/) · "
+    "OMOP CDM mapping: custom-built · "
+    "Built on [Snowflake](https://www.snowflake.com/) · "
+    "Multi-cloud: AWS | Azure | GCP"
+)
