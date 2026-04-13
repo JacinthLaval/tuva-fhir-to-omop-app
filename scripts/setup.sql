@@ -1,0 +1,87 @@
+-- =============================================================================
+-- Tuva FHIR-to-OMOP Native App — Primary Setup Script
+-- Multi-cloud compatible (AWS, Azure, GCP)
+-- Vocabulary seeds: OHDSI Athena, structured per Tuva Health (Apache 2.0)
+-- OMOP CDM mapping: custom-built (FHIR R4 → OMOP CDM v5.4)
+-- =============================================================================
+
+CREATE APPLICATION ROLE IF NOT EXISTS app_user;
+CREATE APPLICATION ROLE IF NOT EXISTS app_admin;
+
+-- ---------------------------------------------------------------------------
+-- Versioned schema: stateless code (procs, functions, views, Streamlit)
+-- ---------------------------------------------------------------------------
+CREATE OR ALTER VERSIONED SCHEMA core;
+GRANT USAGE ON SCHEMA core TO APPLICATION ROLE app_user;
+GRANT USAGE ON SCHEMA core TO APPLICATION ROLE app_admin;
+
+-- ---------------------------------------------------------------------------
+-- Non-versioned schema: mutable state (config, run history, staging)
+-- ---------------------------------------------------------------------------
+CREATE SCHEMA IF NOT EXISTS app_state;
+GRANT USAGE ON SCHEMA app_state TO APPLICATION ROLE app_admin;
+
+-- ---------------------------------------------------------------------------
+-- Configuration table — stores consumer's mapping preferences
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS app_state.configuration (
+    key         VARCHAR(256)  NOT NULL,
+    value       VARCHAR(4096) NOT NULL,
+    updated_at  TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+    PRIMARY KEY (key)
+);
+GRANT SELECT, INSERT, UPDATE ON TABLE app_state.configuration TO APPLICATION ROLE app_admin;
+
+-- ---------------------------------------------------------------------------
+-- Run history — audit trail of transformation runs
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS app_state.run_history (
+    run_id          VARCHAR(36)     DEFAULT UUID_STRING(),
+    started_at      TIMESTAMP_NTZ   DEFAULT CURRENT_TIMESTAMP(),
+    completed_at    TIMESTAMP_NTZ,
+    status          VARCHAR(20)     DEFAULT 'RUNNING',
+    fhir_bundles    INTEGER         DEFAULT 0,
+    persons_mapped  INTEGER         DEFAULT 0,
+    conditions_mapped INTEGER       DEFAULT 0,
+    measurements_mapped INTEGER     DEFAULT 0,
+    visits_mapped   INTEGER         DEFAULT 0,
+    errors          INTEGER         DEFAULT 0,
+    error_detail    VARCHAR(16777216),
+    PRIMARY KEY (run_id)
+);
+GRANT SELECT, INSERT, UPDATE ON TABLE app_state.run_history TO APPLICATION ROLE app_admin;
+GRANT SELECT ON TABLE app_state.run_history TO APPLICATION ROLE app_user;
+
+-- ---------------------------------------------------------------------------
+-- Reference callback — handles consumer object binding
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE PROCEDURE core.register_reference(ref_name VARCHAR, operation VARCHAR, ref_or_alias VARCHAR)
+    RETURNS VARCHAR
+    LANGUAGE SQL
+    EXECUTE AS OWNER
+AS
+BEGIN
+    CASE (operation)
+        WHEN 'ADD' THEN
+            SELECT SYSTEM$SET_REFERENCE(:ref_name, :ref_or_alias);
+        WHEN 'REMOVE' THEN
+            SELECT SYSTEM$REMOVE_REFERENCE(:ref_name, :ref_or_alias);
+        WHEN 'CLEAR' THEN
+            SELECT SYSTEM$REMOVE_ALL_REFERENCES(:ref_name);
+    END CASE;
+    RETURN 'OK';
+END;
+GRANT USAGE ON PROCEDURE core.register_reference(VARCHAR, VARCHAR, VARCHAR)
+    TO APPLICATION ROLE app_admin;
+
+-- ---------------------------------------------------------------------------
+-- Load modular sub-scripts
+-- ---------------------------------------------------------------------------
+EXECUTE IMMEDIATE FROM 'scripts/setup_seeds.sql';
+EXECUTE IMMEDIATE FROM 'scripts/setup_procs.sql';
+EXECUTE IMMEDIATE FROM 'scripts/setup_streamlit.sql';
+
+-- ---------------------------------------------------------------------------
+-- Grant app_admin all of app_user's access (superset)
+-- ---------------------------------------------------------------------------
+GRANT APPLICATION ROLE app_user TO APPLICATION ROLE app_admin;
