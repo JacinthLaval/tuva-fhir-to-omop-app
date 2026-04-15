@@ -1,0 +1,41 @@
+manifest_version: 2
+
+version:
+  name: v1
+  label: "<APP_LABEL>"
+  comment: "<APP_DESCRIPTION>"
+
+artifacts:
+  setup_script: scripts/setup.sql
+  readme: README.md
+  default_streamlit: core.<STREAMLIT_NAME>
+
+configuration:
+  log_level: INFO
+  trace_level: OFF
+
+privileges:
+  - CREATE DATABASE:
+      description: "Creates the OMOP CDM output database in the consumer account"
+  - CREATE WAREHOUSE:
+      description: "Optional: creates a dedicated warehouse for transformation workloads"
+  - EXECUTE TASK:
+      description: "Schedules incremental FHIR-to-OMOP refresh tasks"
+  - EXECUTE MANAGED TASK:
+      description: "Runs serverless tasks for scheduled transformations"
+
+references:
+  - fhir_source_database:
+      label: "FHIR Source Database"
+      description: "Database containing raw FHIR R4 bundles (JSON) to transform into OMOP CDM"
+      privileges:
+        - SELECT
+      object_type: TABLE
+      register_callback: core.register_reference
+  - consumer_warehouse:
+      label: "Warehouse"
+      description: "Warehouse for running FHIR parsing and OMOP transformation queries"
+      privileges:
+        - USAGE
+      object_type: WAREHOUSE
+      register_callback: core.register_reference
