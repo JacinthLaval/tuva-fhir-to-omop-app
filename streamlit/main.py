@@ -4,14 +4,15 @@ import pandas as pd
 import streamlit as st
 from snowflake.snowpark.context import get_active_session
 
-st.set_page_config(page_title="Tuva FHIR-to-OMOP", page_icon="🏥", layout="wide")
+st.set_page_config(page_title="Tuva HL7v2/FHIR-to-OMOP", page_icon="🏥", layout="wide")
 
 session = get_active_session()
 
-st.title("Tuva FHIR-to-OMOP Transformer")
+st.title("Tuva HL7v2/FHIR to OMOP Transformer")
 st.caption(
     "Vocabulary seeds from [Tuva Health](https://thetuvaproject.com/) (Apache 2.0) + "
     "[OHDSI Athena](https://athena.ohdsi.org/) · OMOP mapping: custom-built · "
+    "HL7v2 + FHIR R4 (JSON & XML) auto-detected · "
     "Multi-cloud · Your data never leaves your account"
 )
 
@@ -51,6 +52,37 @@ def list_columns(db, schema, table):
 
 
 @st.cache_data(ttl=60)
+def list_columns_with_types(db, schema, table):
+    try:
+        rows = session.sql(f"DESCRIBE TABLE {db}.{schema}.{table}").collect()
+        return [(r['name'], str(r['type']).upper()) for r in rows]
+    except:
+        return []
+
+
+@st.cache_data(ttl=30)
+def detect_source_format(db, schema, table, data_col):
+    try:
+        row = session.sql(f"""
+            SELECT SUBSTR(TRIM({data_col}::VARCHAR), 1, 4) AS first_chars
+            FROM {db}.{schema}.{table}
+            LIMIT 1
+        """).collect()
+        if not row:
+            return 'unknown'
+        fc = row[0]['FIRST_CHARS'] or ''
+        if fc[:4] == 'MSH|' or fc[:3] == 'MSH':
+            return 'hl7v2'
+        if fc[:1] == '<':
+            return 'xml'
+        if fc[:1] == '{':
+            return 'json'
+        return 'unknown'
+    except:
+        return 'unknown'
+
+
+@st.cache_data(ttl=60)
 def get_table_preview(db, schema, table, limit=5):
     try:
         return session.sql(f"SELECT * FROM {db}.{schema}.{table} LIMIT {limit}").to_pandas()
@@ -75,9 +107,50 @@ tab_config, tab_run, tab_history, tab_vocab, tab_coverage, tab_quality, tab_expl
 
 with tab_config:
 
-    st.subheader("FHIR source")
+    with st.expander("First-time setup — grant access to your data", expanded=False):
+        st.markdown("""
+This app runs with its own privileges. To allow it to read your HL7v2/FHIR source data
+and write OMOP output, you need to grant it access to the relevant database(s).
+
+**Run these SQL statements** in a worksheet (replace the placeholders):
+""")
+        setup_db = st.text_input("Your database name", value="MY_DATABASE", key="setup_db_name")
+        setup_schema = st.text_input("Schema containing HL7v2/FHIR data", value="FHIR_STAGING", key="setup_schema_name")
+        setup_table = st.text_input("Table containing HL7v2/FHIR data", value="RAW_BUNDLES", key="setup_table_name")
+        app_name = "TUVA_FHIR_TO_OMOP_APP"
+
+        grant_sql = f"""-- Grant read access to your HL7v2/FHIR source data
+GRANT USAGE ON DATABASE {setup_db} TO APPLICATION {app_name};
+GRANT USAGE ON SCHEMA {setup_db}.{setup_schema} TO APPLICATION {app_name};
+GRANT SELECT ON TABLE {setup_db}.{setup_schema}.{setup_table} TO APPLICATION {app_name};
+
+-- Grant write access for OMOP output (choose one):
+-- Option A: Let the app create schemas in your database
+GRANT CREATE SCHEMA ON DATABASE {setup_db} TO APPLICATION {app_name};
+-- Option B: Grant access to an existing output schema
+-- GRANT USAGE ON SCHEMA {setup_db}.OMOP_STAGING TO APPLICATION {app_name};
+-- GRANT CREATE TABLE ON SCHEMA {setup_db}.OMOP_STAGING TO APPLICATION {app_name};
+
+-- Bind the warehouse reference
+CALL {app_name}.CORE.REGISTER_REFERENCE('CONSUMER_WAREHOUSE', 'SET', 'COMPUTE_WH');
+
+-- Bind the source table reference
+CALL {app_name}.CORE.REGISTER_REFERENCE('FHIR_SOURCE_DATABASE', 'SET', '{setup_db}.{setup_schema}.{setup_table}');"""  
+
+        st.code(grant_sql, language="sql")
+
+        st.info(
+            "After running these grants, refresh this page. "
+            "Your database will then appear in the dropdowns below."
+        )
+
+    st.subheader("HL7v2 / FHIR source")
 
     databases = list_databases()
+
+    json_column = 'BUNDLE_DATA'
+    bundle_id_col = 'BUNDLE_ID'
+    detected_format = 'unknown'
 
     src_col1, src_col2, src_col3 = st.columns(3)
     with src_col1:
@@ -94,25 +167,48 @@ with tab_config:
 
     if source_db and source_schema and source_table:
         cols = list_columns(source_db, source_schema, source_table)
-        variant_cols = []
-        try:
-            desc_rows = session.sql(f"DESCRIBE TABLE {source_db}.{source_schema}.{source_table}").collect()
-            variant_cols = [r['name'] for r in desc_rows if 'VARIANT' in str(r['type']).upper()]
-        except:
-            variant_cols = cols
+        col_types = list_columns_with_types(source_db, source_schema, source_table)
+
+        variant_cols = [name for name, typ in col_types if 'VARIANT' in typ]
+        varchar_cols = [name for name, typ in col_types if 'VARCHAR' in typ]
+        data_cols = variant_cols + varchar_cols if variant_cols or varchar_cols else cols
+
+        data_col_default = 0
+        for i, c in enumerate(data_cols):
+            if c in ('BUNDLE_DATA', 'RAW_MESSAGE', 'RAW_DATA', 'MESSAGE', 'DATA'):
+                data_col_default = i
+                break
 
         jc1, jc2 = st.columns(2)
         with jc1:
-            json_column = st.selectbox("JSON Column (VARIANT)",
-                                        variant_cols if variant_cols else cols,
-                                        index=variant_cols.index('BUNDLE_DATA') if 'BUNDLE_DATA' in variant_cols else 0,
+            json_column = st.selectbox("Data Column",
+                                        data_cols,
+                                        index=data_col_default,
                                         key="cfg_json_col")
+
+        detected_format = detect_source_format(source_db, source_schema, source_table, json_column)
+        format_labels = {'json': 'FHIR JSON', 'xml': 'FHIR XML', 'hl7v2': 'HL7v2', 'unknown': 'Unknown'}
+
+        with jc1:
+            st.caption(f"Detected: **{format_labels.get(detected_format, 'Unknown')}** — auto-detected from first row")
+
         with jc2:
             id_options = [c for c in cols if c != json_column]
-            default_id = id_options.index('BUNDLE_ID') if 'BUNDLE_ID' in id_options else 0
-            bundle_id_col = st.selectbox("Bundle ID Column",
+            id_default = 0
+            id_pref = ['BUNDLE_ID', 'MESSAGE_ID', 'ID', 'RECORD_ID', 'ROW_ID']
+            for pref in id_pref:
+                if pref in id_options:
+                    id_default = id_options.index(pref)
+                    break
+            else:
+                for i, c in enumerate(id_options):
+                    if 'ID' in c.upper():
+                        id_default = i
+                        break
+            id_label = "Message ID Column" if detected_format == 'hl7v2' else "Bundle ID Column"
+            bundle_id_col = st.selectbox(id_label,
                                           id_options,
-                                          index=default_id,
+                                          index=id_default,
                                           key="cfg_bid_col")
 
         with st.expander("Preview source data", expanded=False):
@@ -166,7 +262,10 @@ with tab_config:
         try:
             prod_counts = []
             for tbl in ['person', 'condition_occurrence', 'measurement', 'visit_occurrence',
-                        'drug_exposure', 'procedure_occurrence', 'observation', 'death']:
+                        'drug_exposure', 'procedure_occurrence', 'observation', 'death',
+                        'device_exposure', 'location', 'care_site', 'provider',
+                        'payer_plan_period', 'cost', 'fact_relationship',
+                        'observation_period', 'cdm_source']:
                 try:
                     cnt = session.sql(f"SELECT COUNT(*) AS c FROM {out_db}.{output_schema}.{tbl}").collect()[0]['C']
                     if cnt > 0:
@@ -194,14 +293,14 @@ with tab_config:
             st.markdown(f"""
             **Source**
             - `{fq_table}`
-            - JSON column: `{json_column if source_table else '—'}`
-            - Bundle ID: `{bundle_id_col if source_table else '—'}`
+            - Data column: `{json_column if source_table else '—'}` *({format_labels.get(detected_format, 'auto-detect')})*
+            - {'Message' if detected_format == 'hl7v2' else 'Bundle'} ID: `{bundle_id_col if source_table else '—'}`
             """)
         with rev2:
             st.markdown(f"""
             **Destination**
             - `{out_db}.{output_schema}`
-            - Tables: person, condition_occurrence, measurement, visit_occurrence, drug_exposure, procedure_occurrence, observation, death
+            - Tables: person, observation_period, condition_occurrence, measurement, visit_occurrence, drug_exposure, procedure_occurrence, device_exposure, observation, death, location, care_site, provider, payer_plan_period, cost, fact_relationship, cdm_source
             """)
 
         if st.button("Save configuration", type="primary", use_container_width=True):
@@ -226,7 +325,7 @@ with tab_config:
         st.info("Select a source table and output schema above to continue.")
 
 with tab_run:
-    st.subheader("Run FHIR-to-OMOP transformation")
+    st.subheader("Run HL7v2/FHIR-to-OMOP transformation")
 
     config = load_config()
 
@@ -241,7 +340,7 @@ with tab_run:
         with c2:
             st.markdown(f"**→ Output:** `{fq_out}`")
         with c3:
-            st.markdown(f"**JSON col:** `{config.get('json_column', 'BUNDLE_DATA')}`")
+            st.markdown(f"**Data col:** `{config.get('json_column', 'BUNDLE_DATA')}`")
 
         if out_schema_display.upper() in PROTECTED_SCHEMAS:
             st.error(f"⚠️ Output targets **{out_schema_display}** — production schema. Change in Configure tab if unintended.")
@@ -252,57 +351,122 @@ with tab_run:
         with run_col1:
             run_btn = st.button("Run full pipeline", type="primary", use_container_width=True)
         with run_col2:
-            st.caption("Parse → Person → Condition → Measurement → Visit → Drug → Procedure → Observation → Death")
+            st.caption("Parse → Person → Condition → Measurement → Visit → Drug → Procedure → Observation → Death → Immunization → MedAdmin → Allergy → Device → DiagReport → Imaging → CarePlan → Location → Org → Practitioner → Claims → CareTeam → ObsPeriod → CDM Source")
 
         if run_btn:
-            progress = st.progress(0, text="Starting pipeline…")
-            status_container = st.container()
+            import time as _time
 
-            steps = [
-                ("Parsing FHIR bundles", None),
-                ("Mapping persons", None),
-                ("Mapping conditions", None),
-                ("Mapping measurements", None),
-                ("Mapping visits", None),
-                ("Mapping drug exposures", None),
-                ("Mapping procedures", None),
-                ("Mapping observations", None),
-                ("Mapping death records", None),
+            run_id = session.sql("SELECT UUID_STRING()").collect()[0][0]
+            try:
+                session.sql(f"""
+                    INSERT INTO app_state.run_history (run_id, status)
+                    VALUES ('{run_id}', 'RUNNING')
+                """).collect()
+            except:
+                pass
+
+            pipeline_steps = [
+                ("Parsing bundles", "core.parse_fhir_bundles", "parse"),
+                ("Mapping persons", "core.map_persons", "map"),
+                ("Mapping conditions", "core.map_conditions", "map"),
+                ("Mapping measurements", "core.map_measurements", "map"),
+                ("Mapping visits", "core.map_visits", "map"),
+                ("Mapping drug exposures", "core.map_drug_exposures", "map"),
+                ("Mapping procedures", "core.map_procedures", "map"),
+                ("Mapping observations", "core.map_observations_qual", "map"),
+                ("Mapping death records", "core.map_death", "map"),
+                ("Mapping immunizations", "core.map_immunizations", "map"),
+                ("Mapping med admin", "core.map_med_administrations", "map"),
+                ("Mapping allergies", "core.map_allergies", "map"),
+                ("Mapping devices", "core.map_devices", "map"),
+                ("Mapping diag reports", "core.map_diagnostic_reports", "map"),
+                ("Mapping imaging", "core.map_imaging_studies", "map"),
+                ("Mapping care plans", "core.map_care_plans", "map"),
+                ("Mapping locations", "core.map_locations", "map"),
+                ("Mapping organizations", "core.map_organizations", "map"),
+                ("Mapping practitioners", "core.map_practitioners", "map"),
+                ("Mapping claims/EOB", "core.map_claims", "map"),
+                ("Mapping care teams", "core.map_care_teams", "map"),
+                ("Building obs periods", "core.build_observation_periods", "map"),
+                ("Building CDM source", "core.build_cdm_source", "map"),
             ]
-            total_steps = len(steps)
+            total_steps = len(pipeline_steps)
+
+            progress = st.progress(0, text="Starting pipeline…")
+            log_expander = st.expander("Pipeline log", expanded=True)
+            with log_expander:
+                log_placeholder = st.empty()
+            log_lines = []
+            errors = []
+            t_start = _time.time()
+
+            for step_idx, (label, proc, kind) in enumerate(pipeline_steps):
+                pct = int((step_idx / total_steps) * 100)
+                progress.progress(pct, text=f"{label}… ({step_idx + 1}/{total_steps})")
+
+                step_t = _time.time()
+                try:
+                    if kind == 'parse':
+                        result = session.call(
+                            proc,
+                            config['source_table'],
+                            config.get('json_column', 'BUNDLE_DATA'),
+                            config.get('bundle_id_column', 'BUNDLE_ID')
+                        )
+                    else:
+                        result = session.call(proc, config.get('output_schema', 'OMOP_STAGING'))
+                    elapsed = _time.time() - step_t
+                    log_lines.append(f"✓ ({step_idx + 1}/{total_steps})  {label} — {elapsed:.1f}s — {result}")
+                except Exception as e:
+                    elapsed = _time.time() - step_t
+                    err_short = str(e).split('\n')[0][:120]
+                    log_lines.append(f"✗ ({step_idx + 1}/{total_steps})  {label} — {elapsed:.1f}s — ERROR: {err_short}")
+                    errors.append(f"{label}: {err_short}")
+
+                log_placeholder.text('\n'.join(log_lines))
+
+            total_elapsed = _time.time() - t_start
+            progress.progress(100, text=f"Pipeline complete! ({total_elapsed:.0f}s)")
+
+            if errors:
+                st.warning(f"Completed with {len(errors)} error(s):\n\n" + "\n".join(f"- {e}" for e in errors))
+            else:
+                st.success(f"All {total_steps} steps completed successfully in {total_elapsed:.0f} seconds.")
+                st.balloons()
+
+            with st.expander("Output summary", expanded=True):
+                summary_data = []
+                for tbl in ['person', 'observation_period', 'condition_occurrence', 'measurement',
+                            'visit_occurrence', 'drug_exposure', 'procedure_occurrence',
+                            'device_exposure', 'observation', 'death',
+                            'location', 'care_site', 'provider',
+                            'payer_plan_period', 'cost', 'fact_relationship', 'cdm_source']:
+                    try:
+                        cnt = session.sql(
+                            f"SELECT COUNT(*) AS c FROM {out_schema_display}.{tbl}"
+                        ).collect()[0]['C']
+                        summary_data.append({"Table": tbl, "Rows": cnt})
+                    except:
+                        summary_data.append({"Table": tbl, "Rows": "—"})
+                st.dataframe(pd.DataFrame(summary_data), use_container_width=True, hide_index=True)
 
             try:
-                result = session.call(
-                    'core.run_full_transformation',
-                    config['source_table'],
-                    config.get('json_column', 'BUNDLE_DATA'),
-                    config.get('output_schema', 'OMOP_STAGING')
-                )
-                progress.progress(100, text="Pipeline complete!")
-
-                if 'FAILED' in str(result):
-                    st.error(result)
-                else:
-                    st.success(result)
-                    st.balloons()
-
-                    with st.expander("Output summary", expanded=True):
-                        summary_data = []
-                        for tbl in ['person', 'condition_occurrence', 'measurement',
-                                    'visit_occurrence', 'drug_exposure', 'procedure_occurrence',
-                                    'observation', 'death']:
-                            try:
-                                cnt = session.sql(
-                                    f"SELECT COUNT(*) AS c FROM {out_schema_display}.{tbl}"
-                                ).collect()[0]['C']
-                                summary_data.append({"Table": tbl, "Rows": cnt})
-                            except:
-                                summary_data.append({"Table": tbl, "Rows": "—"})
-                        st.dataframe(pd.DataFrame(summary_data), use_container_width=True, hide_index=True)
-
-            except Exception as e:
-                progress.progress(100, text="Pipeline failed")
-                st.error(f"Transformation failed: {e}")
+                counts = {d['Table']: d['Rows'] for d in summary_data if isinstance(d.get('Rows'), (int, float))}
+                status = 'COMPLETED_WITH_ERRORS' if errors else 'COMPLETED'
+                session.sql(f"""
+                    UPDATE app_state.run_history SET
+                        status = '{status}',
+                        completed_at = CURRENT_TIMESTAMP(),
+                        fhir_bundles = {counts.get('person', 0)},
+                        persons_mapped = {counts.get('person', 0)},
+                        conditions_mapped = {counts.get('condition_occurrence', 0)},
+                        measurements_mapped = {counts.get('measurement', 0)},
+                        visits_mapped = {counts.get('visit_occurrence', 0)},
+                        errors = {len(errors)}
+                    WHERE run_id = '{run_id}'
+                """).collect()
+            except:
+                pass
 
         st.markdown("---")
         st.subheader("Individual mappers")
@@ -318,10 +482,27 @@ with tab_run:
             ("Procedures", "core.map_procedures", "map"),
             ("Observations", "core.map_observations_qual", "map"),
             ("Death", "core.map_death", "map"),
+            ("Immunizations", "core.map_immunizations", "map"),
+            ("Med Admin", "core.map_med_administrations", "map"),
+            ("Allergies", "core.map_allergies", "map"),
+            ("Devices", "core.map_devices", "map"),
+            ("Diag Reports", "core.map_diagnostic_reports", "map"),
+            ("Imaging", "core.map_imaging_studies", "map"),
+            ("Care Plans", "core.map_care_plans", "map"),
+            ("Locations", "core.map_locations", "map"),
+            ("Organizations", "core.map_organizations", "map"),
+            ("Practitioners", "core.map_practitioners", "map"),
+            ("Claims/EOB", "core.map_claims", "map"),
+            ("Care Teams", "core.map_care_teams", "map"),
+            ("Obs Periods", "core.build_observation_periods", "map"),
+            ("CDM Source", "core.build_cdm_source", "map"),
         ]
         row1 = st.columns(5)
-        row2 = st.columns(4)
-        all_cols = row1 + row2
+        row2 = st.columns(5)
+        row3 = st.columns(5)
+        row4 = st.columns(5)
+        row5 = st.columns(3)
+        all_cols = row1 + row2 + row3 + row4 + row5
         for i, (label, proc, kind) in enumerate(mappers):
             with all_cols[i]:
                 if st.button(label, use_container_width=True, key=f"mapper_{i}"):
@@ -340,7 +521,7 @@ with tab_run:
                         except Exception as e:
                             st.error(str(e))
     else:
-        st.info("Configure your FHIR source in the **Configure** tab first.")
+        st.info("Configure your HL7v2/FHIR source in the **Configure** tab first.")
 
 with tab_history:
     st.subheader("Run history")
@@ -443,6 +624,7 @@ COVERAGE_DOMAINS = {
     "Drug Exposure": {"table": "drug_exposure", "concept_col": "drug_concept_id"},
     "Procedure": {"table": "procedure_occurrence", "concept_col": "procedure_concept_id"},
     "Observation": {"table": "observation", "concept_col": "observation_concept_id"},
+    "Device": {"table": "device_exposure", "concept_col": "device_concept_id"},
 }
 
 with tab_coverage:
@@ -463,9 +645,9 @@ with tab_coverage:
                     SUM(CASE WHEN {col} = 0 OR {col} IS NULL THEN 1 ELSE 0 END) AS unmapped
                 FROM {tbl}
             """).collect()[0]
-            total = row['TOTAL']
-            mapped = row['MAPPED']
-            unmapped = row['UNMAPPED']
+            total = row['TOTAL'] or 0
+            mapped = row['MAPPED'] or 0
+            unmapped = row['UNMAPPED'] or 0
             pct = round(mapped / total * 100, 1) if total > 0 else 0.0
             coverage_data.append({"Domain": domain, "Total": total, "Mapped": mapped,
                                   "Unmapped": unmapped, "Coverage %": pct})
@@ -505,6 +687,8 @@ with tab_coverage:
                           "source_col": "procedure_source_value"},
             "Observation": {"table": "observation", "concept_col": "observation_concept_id",
                             "source_col": "observation_source_value"},
+            "Device": {"table": "device_exposure", "concept_col": "device_concept_id",
+                       "source_col": "device_source_value"},
         }
 
         for domain, info in SOURCE_CODE_MAP.items():
@@ -595,9 +779,11 @@ with tab_explore:
     config = load_config()
     out_schema = config.get('output_schema', 'OMOP_STAGING')
 
-    omop_tables = ['person', 'condition_occurrence', 'measurement',
+    omop_tables = ['person', 'observation_period', 'condition_occurrence', 'measurement',
                    'visit_occurrence', 'drug_exposure', 'procedure_occurrence',
-                   'observation', 'death']
+                   'device_exposure', 'observation', 'death',
+                   'location', 'care_site', 'provider',
+                   'payer_plan_period', 'cost', 'fact_relationship', 'cdm_source']
 
     exp_col1, exp_col2 = st.columns([1, 2])
     with exp_col1:
@@ -623,10 +809,11 @@ with tab_explore:
 
 st.divider()
 st.caption(
-    "Tuva FHIR-to-OMOP · "
+    "Tuva HL7v2/FHIR-to-OMOP · "
     "Vocabulary: [Tuva Health](https://thetuvaproject.com/) (Apache 2.0) + "
     "[OHDSI Athena](https://athena.ohdsi.org/) · "
     "OMOP CDM mapping: custom-built · "
+    "HL7v2 + FHIR R4 (JSON & XML) · "
     "Built on [Snowflake](https://www.snowflake.com/) · "
     "Multi-cloud: AWS | Azure | GCP"
 )

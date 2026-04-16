@@ -35,16 +35,28 @@ GRANT SELECT, INSERT, UPDATE ON TABLE app_state.configuration TO APPLICATION ROL
 -- ---------------------------------------------------------------------------
 -- Run history — audit trail of transformation runs
 -- ---------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS app_state.run_history (
+CREATE OR REPLACE TABLE app_state.run_history (
     run_id          VARCHAR(36)     DEFAULT UUID_STRING(),
     started_at      TIMESTAMP_NTZ   DEFAULT CURRENT_TIMESTAMP(),
     completed_at    TIMESTAMP_NTZ,
-    status          VARCHAR(20)     DEFAULT 'RUNNING',
+    status          VARCHAR(30)     DEFAULT 'RUNNING',
     fhir_bundles    INTEGER         DEFAULT 0,
     persons_mapped  INTEGER         DEFAULT 0,
     conditions_mapped INTEGER       DEFAULT 0,
     measurements_mapped INTEGER     DEFAULT 0,
     visits_mapped   INTEGER         DEFAULT 0,
+    drugs_mapped    INTEGER         DEFAULT 0,
+    procedures_mapped INTEGER       DEFAULT 0,
+    observations_mapped INTEGER     DEFAULT 0,
+    death_mapped    INTEGER         DEFAULT 0,
+    devices_mapped  INTEGER         DEFAULT 0,
+    locations_mapped INTEGER        DEFAULT 0,
+    care_sites_mapped INTEGER       DEFAULT 0,
+    providers_mapped INTEGER        DEFAULT 0,
+    costs_mapped    INTEGER         DEFAULT 0,
+    fact_rels_mapped INTEGER        DEFAULT 0,
+    obs_periods_built INTEGER       DEFAULT 0,
+    payer_plans_mapped INTEGER      DEFAULT 0,
     errors          INTEGER         DEFAULT 0,
     error_detail    VARCHAR(16777216),
     PRIMARY KEY (run_id)
