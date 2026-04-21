@@ -2,8 +2,8 @@ manifest_version: 2
 
 version:
   name: v1
-  label: "Tuva FHIR-to-OMOP v1.0"
-  comment: "FHIR R4 to OMOP CDM transformation. Uses Tuva Health (Apache 2.0) vocabulary/terminology seeds for code crosswalks. OMOP CDM mapping logic is custom-built. Multi-cloud (AWS, Azure, GCP)."
+  label: "Snowflake Health Data Forge v1.6"
+  comment: "Transforms HL7v2, FHIR R4 (JSON & XML) into OMOP CDM v5.4 or Tuva Input Layer. 39 stored procedures (23 OMOP + 13 Tuva + 3 orchestration). Uses Tuva Health (Apache 2.0) vocabulary seeds. Multi-cloud (AWS, Azure, GCP)."
 
 artifacts:
   setup_script: scripts/setup.sql
@@ -27,7 +27,7 @@ privileges:
 references:
   - fhir_source_database:
       label: "FHIR Source Database"
-      description: "Database containing raw FHIR R4 bundles (JSON) to transform into OMOP CDM"
+      description: "Database containing clinical data (HL7v2 messages, FHIR R4 JSON bundles, or FHIR R4 XML bundles) to transform into OMOP CDM or Tuva Input Layer"
       privileges:
         - SELECT
       object_type: TABLE

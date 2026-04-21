@@ -1,11 +1,12 @@
 """
-Graduated FHIR-to-OMOP transformation test.
+Graduated FHIR-to-OMOP/Tuva transformation test.
 
 Usage:
-    python tests/test_transformation.py                  # Level 1: 1 bundle (smoke test)
-    python tests/test_transformation.py --level 2        # Level 2: 10 bundles
-    python tests/test_transformation.py --level 3        # Level 3: full 1,000 bundles vs ground truth
-    python tests/test_transformation.py --level 2 --keep # Keep test schema after run
+    python tests/test_transformation.py                       # Level 1: 1 bundle, OMOP output
+    python tests/test_transformation.py --level 2             # Level 2: 10 bundles, OMOP
+    python tests/test_transformation.py --level 3             # Level 3: full 1,000 bundles vs ground truth
+    python tests/test_transformation.py --format tuva         # Level 1 with Tuva output
+    python tests/test_transformation.py --level 2 --keep      # Keep test schema after run
 """
 
 import argparse
@@ -32,11 +33,20 @@ GROUND_TRUTH = {
 OMOP_TABLES = [
     "person", "condition_occurrence", "measurement", "visit_occurrence",
     "drug_exposure", "procedure_occurrence", "observation", "death",
+    "location", "care_site", "provider", "observation_period", "cdm_source",
+]
+
+TUVA_TABLES = [
+    "patient", "encounter", "condition", "lab_result", "observation",
+    "medication", "immunization", "procedure", "location", "practitioner",
+    "medical_claim", "eligibility", "appointment",
 ]
 
 FHIR_RESOURCE_TYPES = [
     "Patient", "Condition", "Observation", "Encounter",
-    "MedicationRequest", "Procedure",
+    "MedicationRequest", "Procedure", "Immunization",
+    "AllergyIntolerance", "DiagnosticReport", "CarePlan",
+    "CareTeam", "Claim", "Organization", "Practitioner", "Location",
 ]
 
 
@@ -66,9 +76,10 @@ def pf(ok, msg, detail=""):
 
 
 class TestRunner:
-    def __init__(self, level, keep):
+    def __init__(self, level, keep, output_format="omop"):
         self.level = level
         self.keep = keep
+        self.output_format = output_format
         self.conn = connect()
         self.cur = self.conn.cursor()
         self.passed = 0
@@ -593,6 +604,14 @@ class TestRunner:
         self.map_procedures()
         self.map_observations_qual()
         self.map_death()
+        self.map_immunizations()
+        self.map_locations()
+        self.map_organizations()
+        self.map_practitioners()
+        self.build_observation_periods()
+        self.build_cdm_source()
+        if self.output_format == "tuva":
+            self.run_tuva_pipeline()
         print(f"  Pipeline total [{elapsed(t)}]")
         return resource_count
 
@@ -605,9 +624,15 @@ class TestRunner:
         person_count = count(self.cur, f"{self.fq_schema}.PERSON")
         self.check(person_count >= 1, f"At least 1 person mapped", f"got {person_count}")
 
-        for tbl in OMOP_TABLES:
+        tables_to_check = OMOP_TABLES
+        if self.output_format == "tuva":
+            tables_to_check = tables_to_check + ["patient", "encounter", "condition"]
+        for tbl in tables_to_check:
             try:
-                sql(self.cur, f"SELECT * FROM {self.fq_schema}.{tbl.upper()} LIMIT 0")
+                schema = self.fq_schema
+                if tbl in [t.lower() for t in ["PATIENT", "ENCOUNTER", "CONDITION", "LAB_RESULT", "OBSERVATION", "MEDICATION", "IMMUNIZATION", "PROCEDURE", "LOCATION", "PRACTITIONER", "MEDICAL_CLAIM", "ELIGIBILITY", "APPOINTMENT"]] and self.output_format == "tuva":
+                    schema = f"{TEST_DB}.TUVA_TEST_INPUT"
+                sql(self.cur, f"SELECT * FROM {schema}.{tbl.upper()} LIMIT 0")
                 self.check(True, f"Table {tbl} created")
             except Exception:
                 self.check(False, f"Table {tbl} created")
@@ -730,6 +755,206 @@ class TestRunner:
             except Exception:
                 print(f"    {tbl:<30s}  [missing]")
 
+    def map_immunizations(self):
+        t = time.time()
+        sql(self.cur, f"""
+            CREATE OR REPLACE TABLE {self.fq_schema}.DRUG_EXPOSURE_IMMUNIZATION AS
+            SELECT
+                ABS(HASH(r.resource_json:id::VARCHAR)) % 2147483647 AS drug_exposure_id,
+                ABS(HASH(SPLIT_PART(r.resource_json:patient:reference::VARCHAR, '/', -1))) % 2147483647 AS person_id,
+                0 AS drug_concept_id,
+                r.resource_json:occurrenceDateTime::DATE AS drug_exposure_start_date,
+                r.resource_json:occurrenceDateTime::TIMESTAMP_NTZ AS drug_exposure_start_datetime,
+                NULL::DATE AS drug_exposure_end_date,
+                NULL::TIMESTAMP_NTZ AS drug_exposure_end_datetime,
+                NULL::DATE AS verbatim_end_date,
+                32817 AS drug_type_concept_id,
+                NULL::VARCHAR(256) AS stop_reason,
+                NULL::INTEGER AS refills,
+                NULL::FLOAT AS quantity,
+                NULL::INTEGER AS days_supply,
+                NULL::VARCHAR(1000) AS sig,
+                0 AS route_concept_id,
+                r.resource_json:lotNumber::VARCHAR AS lot_number,
+                NULL::INTEGER AS provider_id,
+                NULL::INTEGER AS visit_occurrence_id,
+                vc.value:code::VARCHAR AS drug_source_value,
+                0 AS drug_source_concept_id,
+                NULL::VARCHAR(256) AS route_source_value,
+                NULL::VARCHAR(256) AS dose_unit_source_value
+            FROM {self.fhir_resources} r,
+                LATERAL FLATTEN(input => r.resource_json:vaccineCode:coding, OUTER => TRUE) vc
+            WHERE r.resource_type = 'Immunization'
+        """)
+        n = count(self.cur, f"{self.fq_schema}.DRUG_EXPOSURE_IMMUNIZATION")
+        print(f"  Mapped {n} immunizations [{elapsed(t)}]")
+        return n
+
+    def map_locations(self):
+        t = time.time()
+        sql(self.cur, f"""
+            CREATE OR REPLACE TABLE {self.fq_schema}.LOCATION AS
+            SELECT
+                ABS(HASH(r.resource_json:id::VARCHAR)) % 2147483647 AS location_id,
+                r.resource_json:address:line[0]::VARCHAR AS address_1,
+                NULL::VARCHAR(256) AS address_2,
+                r.resource_json:address:city::VARCHAR AS city,
+                r.resource_json:address:state::VARCHAR AS state,
+                r.resource_json:address:postalCode::VARCHAR AS zip,
+                NULL::VARCHAR(256) AS county,
+                r.resource_json:address:country::VARCHAR AS country_concept_id,
+                NULL::FLOAT AS latitude,
+                NULL::FLOAT AS longitude,
+                r.resource_json:id::VARCHAR AS location_source_value
+            FROM {self.fhir_resources} r
+            WHERE r.resource_type = 'Location'
+        """)
+        n = count(self.cur, f"{self.fq_schema}.LOCATION")
+        print(f"  Mapped {n} locations [{elapsed(t)}]")
+        return n
+
+    def map_organizations(self):
+        t = time.time()
+        sql(self.cur, f"""
+            CREATE OR REPLACE TABLE {self.fq_schema}.CARE_SITE AS
+            SELECT
+                ABS(HASH(r.resource_json:id::VARCHAR)) % 2147483647 AS care_site_id,
+                r.resource_json:name::VARCHAR AS care_site_name,
+                0 AS place_of_service_concept_id,
+                NULL::INTEGER AS location_id,
+                r.resource_json:id::VARCHAR AS care_site_source_value,
+                NULL::VARCHAR(256) AS place_of_service_source_value
+            FROM {self.fhir_resources} r
+            WHERE r.resource_type = 'Organization'
+        """)
+        n = count(self.cur, f"{self.fq_schema}.CARE_SITE")
+        print(f"  Mapped {n} care sites [{elapsed(t)}]")
+        return n
+
+    def map_practitioners(self):
+        t = time.time()
+        sql(self.cur, f"""
+            CREATE OR REPLACE TABLE {self.fq_schema}.PROVIDER AS
+            SELECT
+                ABS(HASH(r.resource_json:id::VARCHAR)) % 2147483647 AS provider_id,
+                COALESCE(r.resource_json:name[0]:family::VARCHAR, '') || ', ' ||
+                    COALESCE(r.resource_json:name[0]:given[0]::VARCHAR, '') AS provider_name,
+                NULL::VARCHAR(256) AS npi,
+                NULL::VARCHAR(256) AS dea,
+                0 AS specialty_concept_id,
+                NULL::INTEGER AS care_site_id,
+                NULL::INTEGER AS year_of_birth,
+                0 AS gender_concept_id,
+                r.resource_json:id::VARCHAR AS provider_source_value,
+                NULL::VARCHAR(256) AS specialty_source_value,
+                0 AS specialty_source_concept_id,
+                NULL::VARCHAR(256) AS gender_source_value,
+                0 AS gender_source_concept_id
+            FROM {self.fhir_resources} r
+            WHERE r.resource_type = 'Practitioner'
+        """)
+        n = count(self.cur, f"{self.fq_schema}.PROVIDER")
+        print(f"  Mapped {n} providers [{elapsed(t)}]")
+        return n
+
+    def build_observation_periods(self):
+        t = time.time()
+        sql(self.cur, f"""
+            CREATE OR REPLACE TABLE {self.fq_schema}.OBSERVATION_PERIOD AS
+            WITH all_events AS (
+                SELECT person_id, condition_start_date AS event_date FROM {self.fq_schema}.CONDITION_OCCURRENCE WHERE condition_start_date IS NOT NULL
+                UNION ALL
+                SELECT person_id, measurement_date AS event_date FROM {self.fq_schema}.MEASUREMENT WHERE measurement_date IS NOT NULL
+                UNION ALL
+                SELECT person_id, visit_start_date AS event_date FROM {self.fq_schema}.VISIT_OCCURRENCE WHERE visit_start_date IS NOT NULL
+                UNION ALL
+                SELECT person_id, drug_exposure_start_date AS event_date FROM {self.fq_schema}.DRUG_EXPOSURE WHERE drug_exposure_start_date IS NOT NULL
+            )
+            SELECT
+                ROW_NUMBER() OVER (ORDER BY person_id) AS observation_period_id,
+                person_id,
+                MIN(event_date) AS observation_period_start_date,
+                MAX(event_date) AS observation_period_end_date,
+                32817 AS period_type_concept_id
+            FROM all_events
+            GROUP BY person_id
+        """)
+        n = count(self.cur, f"{self.fq_schema}.OBSERVATION_PERIOD")
+        print(f"  Built {n} observation periods [{elapsed(t)}]")
+        return n
+
+    def build_cdm_source(self):
+        t = time.time()
+        sql(self.cur, f"""
+            CREATE OR REPLACE TABLE {self.fq_schema}.CDM_SOURCE AS
+            SELECT
+                'Snowflake Health Data Forge' AS cdm_source_name,
+                'Health Data Forge Test' AS cdm_source_abbreviation,
+                'Test run' AS cdm_holder,
+                NULL::VARCHAR(256) AS source_description,
+                NULL::VARCHAR(256) AS source_documentation_reference,
+                NULL::VARCHAR(256) AS cdm_etl_reference,
+                CURRENT_DATE() AS source_release_date,
+                CURRENT_DATE() AS cdm_release_date,
+                'OMOP CDM v5.4' AS cdm_version,
+                756265 AS cdm_version_concept_id,
+                0 AS vocabulary_version
+        """)
+        print(f"  Built cdm_source [{elapsed(t)}]")
+
+    def run_tuva_pipeline(self):
+        t = time.time()
+        tuva_schema = f"{TEST_DB}.TUVA_TEST_INPUT"
+        sql(self.cur, f"CREATE SCHEMA IF NOT EXISTS {tuva_schema}")
+
+        sql(self.cur, f"""
+            CREATE OR REPLACE TABLE {tuva_schema}.PATIENT AS
+            SELECT
+                resource_json:id::VARCHAR AS patient_id,
+                resource_json:gender::VARCHAR AS sex,
+                resource_json:birthDate::DATE AS birth_date,
+                NULL::DATE AS death_date,
+                CASE WHEN resource_json:deceasedBoolean::BOOLEAN = TRUE THEN 1 ELSE 0 END AS death_flag,
+                'fhir' AS data_source
+            FROM {self.fhir_resources}
+            WHERE resource_type = 'Patient'
+        """)
+
+        sql(self.cur, f"""
+            CREATE OR REPLACE TABLE {tuva_schema}.ENCOUNTER AS
+            SELECT
+                resource_json:id::VARCHAR AS encounter_id,
+                SPLIT_PART(resource_json:subject:reference::VARCHAR, '/', -1) AS patient_id,
+                resource_json:class:code::VARCHAR AS encounter_type,
+                resource_json:period:start::TIMESTAMP_NTZ AS encounter_start_date,
+                resource_json:period:end::TIMESTAMP_NTZ AS encounter_end_date,
+                'fhir' AS data_source
+            FROM {self.fhir_resources}
+            WHERE resource_type = 'Encounter'
+        """)
+
+        sql(self.cur, f"""
+            CREATE OR REPLACE TABLE {tuva_schema}.CONDITION AS
+            SELECT
+                resource_json:id::VARCHAR AS condition_id,
+                SPLIT_PART(resource_json:subject:reference::VARCHAR, '/', -1) AS patient_id,
+                cc.value:code::VARCHAR AS source_code,
+                cc.value:system::VARCHAR AS source_code_type,
+                COALESCE(resource_json:onsetDateTime::DATE, resource_json:recordedDate::DATE) AS condition_date,
+                'fhir' AS data_source
+            FROM {self.fhir_resources},
+                LATERAL FLATTEN(input => resource_json:code:coding, OUTER => TRUE) cc
+            WHERE resource_type = 'Condition'
+        """)
+
+        for tbl in ["PATIENT", "ENCOUNTER", "CONDITION"]:
+            n = count(self.cur, f"{tuva_schema}.{tbl}")
+            print(f"  Tuva {tbl}: {n} rows")
+
+        if not self.keep:
+            sql(self.cur, f"DROP SCHEMA IF EXISTS {tuva_schema} CASCADE")
+        print(f"  Tuva pipeline [{elapsed(t)}]")
+
     def cleanup(self):
         if not self.keep:
             t = time.time()
@@ -778,8 +1003,10 @@ def main():
                         help="Test level: 1=smoke (1 bundle), 2=ten bundles, 3=full dataset")
     parser.add_argument("--keep", action="store_true",
                         help="Keep test schema after run")
+    parser.add_argument("--format", choices=["omop", "tuva"], default="omop",
+                        help="Output format: omop (default) or tuva")
     args = parser.parse_args()
-    sys.exit(TestRunner(args.level, args.keep).run())
+    sys.exit(TestRunner(args.level, args.keep, args.format).run())
 
 
 if __name__ == "__main__":
