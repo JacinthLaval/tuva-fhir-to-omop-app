@@ -3,14 +3,14 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Tuva FHIR-to-OMOP — Installation Guide</title>
+<title>Snowflake Health Data Forge — Installation Guide</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body { font-family: 'Inter', -apple-system, sans-serif; background: #f4f9fc; color: #11567F; line-height: 1.6; }
   .header { background: linear-gradient(135deg, #11567F 0%, #1a6e9e 100%); color: white; padding: 3rem 2rem; text-align: center; }
   .header h1 { font-size: 2rem; font-weight: 700; margin-bottom: 0.5rem; }
-  .header p { font-size: 1rem; opacity: 0.85; max-width: 600px; margin: 0 auto; }
+  .header p { font-size: 1rem; opacity: 0.85; max-width: 700px; margin: 0 auto; }
   .container { max-width: 800px; margin: 0 auto; padding: 2rem 1.5rem 4rem; }
   .badge { display: inline-block; background: #29B5E8; color: white; font-size: 0.75rem; font-weight: 600; padding: 0.2rem 0.6rem; border-radius: 4px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 1rem; }
   .card { background: white; border: 1px solid #d0e8f2; border-radius: 10px; padding: 1.5rem 1.75rem; margin-bottom: 1.25rem; }
@@ -32,13 +32,21 @@
   .footer { text-align: center; padding: 2rem; color: #6b8a9e; font-size: 0.8rem; }
   .footer a { color: #29B5E8; text-decoration: none; }
   .copy-hint { font-size: 0.75rem; color: #6b8a9e; margin-top: 0.35rem; }
+  .format-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.75rem; margin-top: 0.75rem; }
+  .format-item { background: #f4f9fc; border: 1px solid #d0e8f2; border-radius: 8px; padding: 0.75rem 1rem; text-align: center; }
+  .format-item strong { font-size: 0.85rem; color: #11567F; display: block; }
+  .format-item span { font-size: 0.8rem; color: #6b8a9e; }
+  .output-toggle { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; margin-top: 0.75rem; }
+  .output-item { background: #f4f9fc; border: 1px solid #d0e8f2; border-radius: 8px; padding: 0.75rem 1rem; }
+  .output-item strong { font-size: 0.9rem; color: #11567F; }
+  .output-item span { display: block; font-size: 0.8rem; color: #6b8a9e; margin-top: 0.2rem; }
 </style>
 </head>
 <body>
 
 <div class="header">
-  <h1>Tuva FHIR-to-OMOP Transformer</h1>
-  <p>Install this Snowflake Native App to transform FHIR R4 bundles into OMOP CDM v5.4 tables — entirely within your Snowflake account.</p>
+  <h1>Snowflake Health Data Forge</h1>
+  <p>Transform HL7v2 messages, FHIR R4 JSON bundles, or FHIR R4 XML bundles into OMOP CDM v5.4 or Tuva Input Layer tables — entirely within your Snowflake account.</p>
 </div>
 
 <div class="container">
@@ -56,8 +64,8 @@
         <span>Any size — XS works fine for testing</span>
       </div>
       <div class="prereq-item">
-        <strong>FHIR R4 data</strong>
-        <span>Table with a VARIANT column containing FHIR bundles</span>
+        <strong>Clinical data</strong>
+        <span>HL7v2, FHIR R4 JSON, or FHIR R4 XML in a Snowflake table</span>
       </div>
       <div class="prereq-item">
         <strong>Account shared</strong>
@@ -65,8 +73,42 @@
       </div>
     </div>
     <div class="note">
-      <strong>Performance:</strong> 1,000 FHIR bundles processes in ~65 seconds on an X-Small warehouse. Any size works — larger warehouses scale linearly.
+      <strong>Performance:</strong> 1,000 FHIR bundles in ~65s, 4,013 HL7v2 messages in ~270s on an X-Small warehouse. Larger warehouses scale linearly.
     </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <span class="badge">Supported formats</span>
+    <h2>Input Formats (auto-detected)</h2>
+    <div class="format-grid">
+      <div class="format-item">
+        <strong>HL7v2</strong>
+        <span>Pipe-delimited messages (10 segment types)</span>
+      </div>
+      <div class="format-item">
+        <strong>FHIR R4 JSON</strong>
+        <span>VARIANT column with Bundle JSON</span>
+      </div>
+      <div class="format-item">
+        <strong>FHIR R4 XML</strong>
+        <span>VARCHAR column with Bundle XML</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <span class="badge">Choose your output</span>
+    <h2>Output Formats</h2>
+    <div class="output-toggle">
+      <div class="output-item">
+        <strong>OMOP CDM v5.4</strong>
+        <span>23 mappers producing 17 clinical + infrastructure tables. Concept IDs mapped via vocabulary crosswalks (LOINC, SNOMED, RxNorm, ICD-10, CPT, HCPCS).</span>
+      </div>
+      <div class="output-item">
+        <strong>Tuva Input Layer</strong>
+        <span>13 mappers producing analytics-ready tables using source codes directly. Each row stamped with a data_source label.</span>
+      </div>
     </div>
   </div>
 
@@ -75,41 +117,41 @@
     <p>This creates the app in your account from the shared package.</p>
     <pre><span class="comment">-- Install the app</span>
 <span class="keyword">CREATE APPLICATION</span> TUVA_FHIR_TO_OMOP_APP
-    <span class="keyword">FROM APPLICATION PACKAGE</span> TUVA_FHIR_TO_OMOP_PKG;</pre>
+    <span class="keyword">FROM APPLICATION PACKAGE</span> TUVA_FHIR_TO_OMOP_PKG
+    <span class="keyword">USING VERSION</span> V1_6;</pre>
   </div>
 
   <div class="card">
     <h2><span class="step">2</span>Grant privileges</h2>
     <p>The app needs permission to create its output database, use your warehouse, and read your source data.</p>
-    <pre><span class="comment">-- Allow the app to create the OMOP output database</span>
+    <pre><span class="comment">-- Allow the app to create the output database</span>
 <span class="keyword">GRANT</span> CREATE DATABASE <span class="keyword">ON ACCOUNT TO APPLICATION</span> TUVA_FHIR_TO_OMOP_APP;
 
 <span class="comment">-- Let the app use your warehouse (replace with yours)</span>
 <span class="keyword">GRANT USAGE ON WAREHOUSE</span> <span class="string">MY_WAREHOUSE</span> <span class="keyword">TO APPLICATION</span> TUVA_FHIR_TO_OMOP_APP;
 
-<span class="comment">-- Grant the app read access to your FHIR source data</span>
+<span class="comment">-- Grant the app read access to your source data</span>
 <span class="keyword">GRANT USAGE ON DATABASE</span> <span class="string">MY_DB</span> <span class="keyword">TO APPLICATION</span> TUVA_FHIR_TO_OMOP_APP;
 <span class="keyword">GRANT USAGE ON SCHEMA</span> <span class="string">MY_DB.MY_SCHEMA</span> <span class="keyword">TO APPLICATION</span> TUVA_FHIR_TO_OMOP_APP;
-<span class="keyword">GRANT SELECT ON TABLE</span> <span class="string">MY_DB.MY_SCHEMA.MY_FHIR_BUNDLES</span> <span class="keyword">TO APPLICATION</span> TUVA_FHIR_TO_OMOP_APP;</pre>
+<span class="keyword">GRANT SELECT ON ALL TABLES IN SCHEMA</span> <span class="string">MY_DB.MY_SCHEMA</span> <span class="keyword">TO APPLICATION</span> TUVA_FHIR_TO_OMOP_APP;</pre>
     <div class="note">
-      <strong>Important:</strong> Replace <code>MY_DB</code>, <code>MY_SCHEMA</code>, <code>MY_FHIR_BUNDLES</code>, and <code>MY_WAREHOUSE</code> with your actual names in all commands on this page.
+      <strong>Important:</strong> Replace <code>MY_DB</code>, <code>MY_SCHEMA</code>, and <code>MY_WAREHOUSE</code> with your actual names in all commands on this page.
     </div>
   </div>
 
   <div class="card">
-    <h2><span class="step">3</span>Bind your FHIR source table</h2>
-    <p>Register the table reference so the app knows where to find your FHIR bundles.</p>
+    <h2><span class="step">3</span>Bind your source table</h2>
+    <p>Register the table reference so the app knows where to find your clinical data.</p>
     <pre><span class="keyword">CALL</span> TUVA_FHIR_TO_OMOP_APP.CORE.REGISTER_REFERENCE(
     <span class="string">'fhir_source_database'</span>, <span class="string">'SET'</span>,
-    <span class="string">'MY_DB.MY_SCHEMA.MY_FHIR_BUNDLES'</span>
+    <span class="string">'MY_DB.MY_SCHEMA.MY_SOURCE_TABLE'</span>
 );</pre>
   </div>
 
   <div class="card">
     <h2><span class="step">4</span>Bind your warehouse</h2>
     <p>Tell the app which warehouse to use for compute.</p>
-    <pre><span class="comment">-- Replace with your warehouse name</span>
-<span class="keyword">CALL</span> TUVA_FHIR_TO_OMOP_APP.CORE.REGISTER_REFERENCE(
+    <pre><span class="keyword">CALL</span> TUVA_FHIR_TO_OMOP_APP.CORE.REGISTER_REFERENCE(
     <span class="string">'consumer_warehouse'</span>, <span class="string">'SET'</span>,
     <span class="string">'MY_WAREHOUSE'</span>
 );</pre>
@@ -119,53 +161,91 @@
     <h2><span class="step">5</span>Open the app</h2>
     <p>Navigate to <strong>Apps → TUVA_FHIR_TO_OMOP_APP</strong> in Snowsight. The Streamlit UI will guide you through:</p>
     <ul>
-      <li><strong>Configure</strong> — Select your source table, JSON column, and output schema</li>
-      <li><strong>Run</strong> — Execute the full FHIR → OMOP pipeline or individual mappers</li>
+      <li><strong>Configure</strong> — Select your source table, column, and output format (OMOP or Tuva)</li>
+      <li><strong>Run</strong> — Execute the full pipeline or individual mappers with per-step progress</li>
       <li><strong>Vocabulary</strong> — Browse the included terminology mappings (LOINC, SNOMED, RxNorm, etc.)</li>
-      <li><strong>Coverage</strong> — See how many records mapped to standard OMOP concepts</li>
-      <li><strong>Explore</strong> — Browse the output OMOP CDM tables</li>
+      <li><strong>Coverage</strong> — See how many records mapped to standard concepts</li>
+      <li><strong>Explore</strong> — Browse the output tables (format-aware: OMOP or Tuva)</li>
+      <li><strong>Quality</strong> — Run FHIR quality validation on your input data</li>
+      <li><strong>History</strong> — View transformation run history and audit trail</li>
     </ul>
     <div class="note">
-      <strong>Tip:</strong> The default output schema is <code>OMOP_STAGING</code>. You can change it in the Configure tab. If you select <code>OMOP_CDM</code>, the app will warn you and show existing row counts before allowing overwrites.
+      <strong>Tip:</strong> The app auto-detects your input format (HL7v2, JSON, XML). The default OMOP output schema is <code>omop_staging</code> and Tuva output schema is <code>tuva_input</code>.
     </div>
   </div>
 
   <div class="card">
-    <h2>Expected FHIR table format</h2>
-    <p>Your source table should have at minimum:</p>
+    <h2>Expected source table formats</h2>
+    <p><strong>FHIR R4 JSON:</strong></p>
     <pre><span class="keyword">CREATE TABLE</span> my_fhir_bundles (
     BUNDLE_ID   <span class="keyword">TEXT</span>,          <span class="comment">-- unique ID per bundle</span>
-    BUNDLE_DATA <span class="keyword">VARIANT</span>       <span class="comment">-- the FHIR R4 Bundle JSON</span>
+    BUNDLE_DATA <span class="keyword">VARIANT</span>       <span class="comment">-- FHIR R4 Bundle JSON</span>
 );</pre>
-    <p class="copy-hint" style="margin-top: 0.75rem;">Column names are configurable in the app — BUNDLE_ID and BUNDLE_DATA are defaults.</p>
+    <p style="margin-top: 1rem;"><strong>FHIR R4 XML:</strong></p>
+    <pre><span class="keyword">CREATE TABLE</span> my_fhir_xml (
+    BUNDLE_ID   <span class="keyword">TEXT</span>,          <span class="comment">-- unique ID per bundle</span>
+    BUNDLE_DATA <span class="keyword">TEXT</span>          <span class="comment">-- FHIR R4 Bundle XML string</span>
+);</pre>
+    <p style="margin-top: 1rem;"><strong>HL7v2:</strong></p>
+    <pre><span class="keyword">CREATE TABLE</span> my_hl7v2_messages (
+    MESSAGE_ID   <span class="keyword">TEXT</span>,         <span class="comment">-- unique ID per message</span>
+    MESSAGE_DATA <span class="keyword">TEXT</span>         <span class="comment">-- HL7v2 pipe-delimited message</span>
+);</pre>
+    <p class="copy-hint" style="margin-top: 0.75rem;">Column names are configurable in the app.</p>
     <div class="note">
-      <strong>Don't have FHIR data?</strong> Generate synthetic bundles with <a href="https://github.com/synthetichealth/synthea" style="color: #29B5E8;">Synthea</a>, then load the JSON files into a VARIANT column.
+      <strong>Don't have clinical data?</strong> Generate synthetic FHIR bundles with <a href="https://github.com/synthetichealth/synthea" style="color: #29B5E8;">Synthea</a>, then load the JSON files into a VARIANT column.
     </div>
   </div>
 
   <div class="card">
-    <h2>OMOP tables created</h2>
-    <p>The pipeline produces these OMOP CDM v5.4 tables in your chosen output schema:</p>
+    <h2>OMOP CDM v5.4 output (23 mappers)</h2>
+    <p>When choosing OMOP output, the pipeline produces these tables:</p>
     <ul>
       <li><strong>person</strong> — Demographics (gender, birth date, race, ethnicity)</li>
       <li><strong>visit_occurrence</strong> — Encounters / visits</li>
       <li><strong>condition_occurrence</strong> — Diagnoses</li>
-      <li><strong>measurement</strong> — Labs, vitals, observations</li>
-      <li><strong>drug_exposure</strong> — Medications</li>
-      <li><strong>procedure_occurrence</strong> — Procedures</li>
-      <li><strong>observation</strong> — Qualitative observations (smoking status, etc.)</li>
+      <li><strong>measurement</strong> — Labs, vitals, quantitative observations</li>
+      <li><strong>drug_exposure</strong> — Medications, immunizations, administrations</li>
+      <li><strong>procedure_occurrence</strong> — Procedures, imaging studies</li>
+      <li><strong>observation</strong> — Qualitative observations, allergies, care plans, care teams</li>
       <li><strong>death</strong> — Mortality records</li>
+      <li><strong>location</strong> — Physical locations</li>
+      <li><strong>care_site</strong> — Organizations / facilities</li>
+      <li><strong>provider</strong> — Practitioners</li>
+      <li><strong>payer_plan_period / cost</strong> — Claims and costs</li>
+      <li><strong>observation_period</strong> — Derived event windows per person</li>
+      <li><strong>cdm_source</strong> — ETL metadata</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>Tuva Input Layer output (13 mappers)</h2>
+    <p>When choosing Tuva output, the pipeline produces these analytics-ready tables:</p>
+    <ul>
+      <li><strong>patient</strong> — Demographics</li>
+      <li><strong>encounter</strong> — Visits</li>
+      <li><strong>condition</strong> — Diagnoses</li>
+      <li><strong>lab_result</strong> — Lab values</li>
+      <li><strong>observation</strong> — Clinical observations</li>
+      <li><strong>medication</strong> — Prescriptions</li>
+      <li><strong>immunization</strong> — Vaccines</li>
+      <li><strong>procedure</strong> — Procedures</li>
+      <li><strong>location</strong> — Locations</li>
+      <li><strong>practitioner</strong> — Providers</li>
+      <li><strong>medical_claim</strong> — Claims</li>
+      <li><strong>eligibility</strong> — Coverage</li>
+      <li><strong>appointment</strong> — Scheduled encounters</li>
     </ul>
   </div>
 
 </div>
 
 <div class="footer">
-  Tuva FHIR-to-OMOP &middot;
+  Snowflake Health Data Forge &middot;
   Vocabulary: <a href="https://thetuvaproject.com/">Tuva Health</a> (Apache 2.0) +
   <a href="https://athena.ohdsi.org/">OHDSI Athena</a> &middot;
   Built on <a href="https://www.snowflake.com/">Snowflake</a> &middot;
-  Version 1.0
+  Version 1.6
 </div>
 
 </body>
