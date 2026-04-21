@@ -2876,3 +2876,1342 @@ def run(session, source_table: str, json_column: str, output_schema: str, bundle
 $$;
 GRANT USAGE ON PROCEDURE core.run_full_transformation(VARCHAR, VARCHAR, VARCHAR, VARCHAR)
     TO APPLICATION ROLE app_admin;
+
+-- ===========================================================================
+-- TUVA INPUT LAYER MAPPERS
+-- ===========================================================================
+
+CREATE OR REPLACE PROCEDURE core.map_tuva_patient(output_schema VARCHAR DEFAULT 'tuva_staging', data_source VARCHAR DEFAULT 'fhir')
+    RETURNS VARCHAR
+    LANGUAGE PYTHON
+    RUNTIME_VERSION = '3.11'
+    PACKAGES = ('snowflake-snowpark-python')
+    HANDLER = 'run'
+    EXECUTE AS OWNER
+AS
+$$
+def run(session, output_schema: str, data_source: str) -> str:
+    session.sql(f"CREATE SCHEMA IF NOT EXISTS {output_schema}").collect()
+
+    session.sql(f"""
+        CREATE OR REPLACE TABLE {output_schema}.patient (
+            person_id                   INTEGER,
+            patient_id                  VARCHAR,
+            first_name                  VARCHAR,
+            last_name                   VARCHAR,
+            sex                         VARCHAR,
+            race                        VARCHAR,
+            ethnicity                   VARCHAR,
+            birth_date                  DATE,
+            death_date                  DATE,
+            death_flag                  INTEGER,
+            address                     VARCHAR,
+            city                        VARCHAR,
+            state                       VARCHAR,
+            zip_code                    VARCHAR,
+            county                      VARCHAR,
+            latitude                    FLOAT,
+            longitude                   FLOAT,
+            phone                       VARCHAR,
+            email                       VARCHAR,
+            social_security_number      VARCHAR,
+            data_source                 VARCHAR,
+            file_name                   VARCHAR,
+            ingest_datetime             TIMESTAMP_NTZ
+        )
+    """).collect()
+
+    session.sql(f"""
+        INSERT INTO {output_schema}.patient
+        WITH patients AS (
+            SELECT
+                resource_json:id::VARCHAR AS patient_id,
+                resource_json AS rj
+            FROM app_state.fhir_resources
+            WHERE resource_type = 'Patient'
+        ),
+        race_ext AS (
+            SELECT p.patient_id,
+                   e.value:valueCoding:display::VARCHAR AS race_display
+            FROM patients p,
+                LATERAL FLATTEN(input => p.rj:extension, OUTER => TRUE) e
+            WHERE e.value:url::VARCHAR LIKE '%us-core-race'
+        ),
+        eth_ext AS (
+            SELECT p.patient_id,
+                   e.value:valueCoding:display::VARCHAR AS eth_display
+            FROM patients p,
+                LATERAL FLATTEN(input => p.rj:extension, OUTER => TRUE) e
+            WHERE e.value:url::VARCHAR LIKE '%us-core-ethnicity'
+        ),
+        phone_ext AS (
+            SELECT p.patient_id,
+                   t.value:value::VARCHAR AS phone_value
+            FROM patients p,
+                LATERAL FLATTEN(input => p.rj:telecom, OUTER => TRUE) t
+            WHERE t.value:system::VARCHAR = 'phone'
+        ),
+        email_ext AS (
+            SELECT p.patient_id,
+                   t.value:value::VARCHAR AS email_value
+            FROM patients p,
+                LATERAL FLATTEN(input => p.rj:telecom, OUTER => TRUE) t
+            WHERE t.value:system::VARCHAR = 'email'
+        ),
+        ssn_ext AS (
+            SELECT p.patient_id,
+                   i.value:value::VARCHAR AS ssn_value
+            FROM patients p,
+                LATERAL FLATTEN(input => p.rj:identifier, OUTER => TRUE) i
+            WHERE i.value:system::VARCHAR ILIKE '%ssn%'
+        )
+        SELECT
+            ABS(HASH(p.patient_id)) % 2147483647    AS person_id,
+            p.patient_id,
+            p.rj:name[0]:given[0]::VARCHAR           AS first_name,
+            p.rj:name[0]:family::VARCHAR              AS last_name,
+            p.rj:gender::VARCHAR                      AS sex,
+            r.race_display                            AS race,
+            e.eth_display                             AS ethnicity,
+            p.rj:birthDate::DATE                      AS birth_date,
+            p.rj:deceasedDateTime::DATE               AS death_date,
+            CASE
+                WHEN p.rj:deceasedDateTime IS NOT NULL THEN 1
+                WHEN p.rj:deceasedBoolean::BOOLEAN = TRUE THEN 1
+                ELSE 0
+            END                                       AS death_flag,
+            p.rj:address[0]:line[0]::VARCHAR          AS address,
+            p.rj:address[0]:city::VARCHAR             AS city,
+            p.rj:address[0]:state::VARCHAR            AS state,
+            p.rj:address[0]:postalCode::VARCHAR       AS zip_code,
+            p.rj:address[0]:district::VARCHAR         AS county,
+            NULL::FLOAT                               AS latitude,
+            NULL::FLOAT                               AS longitude,
+            ph.phone_value                            AS phone,
+            em.email_value                            AS email,
+            ss.ssn_value                              AS social_security_number,
+            '{data_source}'                           AS data_source,
+            NULL::VARCHAR                             AS file_name,
+            CURRENT_TIMESTAMP()                       AS ingest_datetime
+        FROM patients p
+        LEFT JOIN race_ext r ON r.patient_id = p.patient_id
+        LEFT JOIN eth_ext e ON e.patient_id = p.patient_id
+        LEFT JOIN phone_ext ph ON ph.patient_id = p.patient_id
+        LEFT JOIN email_ext em ON em.patient_id = p.patient_id
+        LEFT JOIN ssn_ext ss ON ss.patient_id = p.patient_id
+    """).collect()
+
+    count = session.sql(f"SELECT COUNT(*) AS cnt FROM {output_schema}.patient").collect()[0]['CNT']
+    return f"Mapped {count} patients to {output_schema}.patient"
+$$;
+GRANT USAGE ON PROCEDURE core.map_tuva_patient(VARCHAR, VARCHAR)
+    TO APPLICATION ROLE app_admin;
+
+CREATE OR REPLACE PROCEDURE core.map_tuva_encounter(output_schema VARCHAR DEFAULT 'tuva_staging', data_source VARCHAR DEFAULT 'fhir')
+    RETURNS VARCHAR
+    LANGUAGE PYTHON
+    RUNTIME_VERSION = '3.11'
+    PACKAGES = ('snowflake-snowpark-python')
+    HANDLER = 'run'
+    EXECUTE AS OWNER
+AS
+$$
+def run(session, output_schema: str, data_source: str) -> str:
+    session.sql(f"CREATE SCHEMA IF NOT EXISTS {output_schema}").collect()
+
+    session.sql(f"""
+        CREATE OR REPLACE TABLE {output_schema}.encounter (
+            encounter_id                        VARCHAR,
+            person_id                           INTEGER,
+            patient_id                          VARCHAR,
+            encounter_type                      VARCHAR,
+            encounter_start_date                DATE,
+            encounter_end_date                  DATE,
+            length_of_stay                      INTEGER,
+            admit_source_code                   VARCHAR,
+            admit_source_description            VARCHAR,
+            admit_type_code                     VARCHAR,
+            admit_type_description              VARCHAR,
+            discharge_disposition_code          VARCHAR,
+            discharge_disposition_description   VARCHAR,
+            attending_provider_id               VARCHAR,
+            attending_provider_name             VARCHAR,
+            facility_id                         VARCHAR,
+            facility_name                       VARCHAR,
+            primary_diagnosis_code_type         VARCHAR,
+            primary_diagnosis_code              VARCHAR,
+            primary_diagnosis_description       VARCHAR,
+            drg_code_type                       VARCHAR,
+            drg_code                            VARCHAR,
+            drg_description                     VARCHAR,
+            paid_amount                         FLOAT,
+            allowed_amount                      FLOAT,
+            charge_amount                       FLOAT,
+            data_source                         VARCHAR,
+            file_name                           VARCHAR,
+            ingest_datetime                     TIMESTAMP_NTZ
+        )
+    """).collect()
+
+    session.sql(f"""
+        INSERT INTO {output_schema}.encounter
+        WITH encounters AS (
+            SELECT
+                resource_json:id::VARCHAR AS encounter_id,
+                SPLIT_PART(resource_json:subject:reference::VARCHAR, '/', -1) AS patient_id,
+                resource_json AS rj
+            FROM app_state.fhir_resources
+            WHERE resource_type = 'Encounter'
+        )
+        SELECT
+            e.encounter_id,
+            ABS(HASH(e.patient_id)) % 2147483647     AS person_id,
+            e.patient_id,
+            COALESCE(e.rj:type[0]:coding[0]:display::VARCHAR, e.rj:class:display::VARCHAR) AS encounter_type,
+            e.rj:period:start::DATE                   AS encounter_start_date,
+            e.rj:period:end::DATE                     AS encounter_end_date,
+            DATEDIFF('day', e.rj:period:start::DATE, e.rj:period:end::DATE) AS length_of_stay,
+            e.rj:hospitalization:admitSource:coding[0]:code::VARCHAR    AS admit_source_code,
+            e.rj:hospitalization:admitSource:coding[0]:display::VARCHAR AS admit_source_description,
+            e.rj:type[0]:coding[0]:code::VARCHAR      AS admit_type_code,
+            e.rj:type[0]:coding[0]:display::VARCHAR   AS admit_type_description,
+            e.rj:hospitalization:dischargeDisposition:coding[0]:code::VARCHAR    AS discharge_disposition_code,
+            e.rj:hospitalization:dischargeDisposition:coding[0]:display::VARCHAR AS discharge_disposition_description,
+            SPLIT_PART(e.rj:participant[0]:individual:reference::VARCHAR, '/', -1) AS attending_provider_id,
+            NULL::VARCHAR                             AS attending_provider_name,
+            SPLIT_PART(e.rj:location[0]:location:reference::VARCHAR, '/', -1) AS facility_id,
+            NULL::VARCHAR                             AS facility_name,
+            NULL::VARCHAR                             AS primary_diagnosis_code_type,
+            NULL::VARCHAR                             AS primary_diagnosis_code,
+            NULL::VARCHAR                             AS primary_diagnosis_description,
+            NULL::VARCHAR                             AS drg_code_type,
+            NULL::VARCHAR                             AS drg_code,
+            NULL::VARCHAR                             AS drg_description,
+            NULL::FLOAT                               AS paid_amount,
+            NULL::FLOAT                               AS allowed_amount,
+            NULL::FLOAT                               AS charge_amount,
+            '{data_source}'                           AS data_source,
+            NULL::VARCHAR                             AS file_name,
+            CURRENT_TIMESTAMP()                       AS ingest_datetime
+        FROM encounters e
+    """).collect()
+
+    count = session.sql(f"SELECT COUNT(*) AS cnt FROM {output_schema}.encounter").collect()[0]['CNT']
+    return f"Mapped {count} encounters to {output_schema}.encounter"
+$$;
+GRANT USAGE ON PROCEDURE core.map_tuva_encounter(VARCHAR, VARCHAR)
+    TO APPLICATION ROLE app_admin;
+
+CREATE OR REPLACE PROCEDURE core.map_tuva_condition(output_schema VARCHAR DEFAULT 'tuva_staging', data_source VARCHAR DEFAULT 'fhir')
+    RETURNS VARCHAR
+    LANGUAGE PYTHON
+    RUNTIME_VERSION = '3.11'
+    PACKAGES = ('snowflake-snowpark-python')
+    HANDLER = 'run'
+    EXECUTE AS OWNER
+AS
+$$
+def run(session, output_schema: str, data_source: str) -> str:
+    session.sql(f"CREATE SCHEMA IF NOT EXISTS {output_schema}").collect()
+
+    session.sql(f"""
+        CREATE OR REPLACE TABLE {output_schema}.condition (
+            condition_id                VARCHAR,
+            person_id                   INTEGER,
+            patient_id                  VARCHAR,
+            encounter_id                VARCHAR,
+            claim_id                    VARCHAR,
+            recorded_date               DATE,
+            onset_date                  DATE,
+            resolved_date               DATE,
+            status                      VARCHAR,
+            condition_type              VARCHAR,
+            source_code_type            VARCHAR,
+            source_code                 VARCHAR,
+            source_description          VARCHAR,
+            normalized_code_type        VARCHAR,
+            normalized_code             VARCHAR,
+            normalized_description      VARCHAR,
+            condition_rank              VARCHAR,
+            present_on_admit_code       VARCHAR,
+            present_on_admit_description VARCHAR,
+            data_source                 VARCHAR,
+            file_name                   VARCHAR,
+            ingest_datetime             TIMESTAMP_NTZ
+        )
+    """).collect()
+
+    session.sql(f"""
+        INSERT INTO {output_schema}.condition
+        WITH conditions AS (
+            SELECT
+                resource_json:id::VARCHAR AS condition_id,
+                SPLIT_PART(resource_json:subject:reference::VARCHAR, '/', -1) AS patient_id,
+                SPLIT_PART(resource_json:encounter:reference::VARCHAR, '/', -1) AS encounter_id,
+                resource_json AS rj
+            FROM app_state.fhir_resources
+            WHERE resource_type = 'Condition'
+        ),
+        codes AS (
+            SELECT c.condition_id,
+                   cc.value:system::VARCHAR AS code_system,
+                   cc.value:code::VARCHAR AS code_val,
+                   COALESCE(cc.value:display::VARCHAR, c.rj:code:text::VARCHAR) AS code_display
+            FROM conditions c,
+                LATERAL FLATTEN(input => c.rj:code:coding, OUTER => TRUE) cc
+        )
+        SELECT
+            c.condition_id,
+            ABS(HASH(c.patient_id)) % 2147483647      AS person_id,
+            c.patient_id,
+            c.encounter_id,
+            NULL::VARCHAR                              AS claim_id,
+            c.rj:recordedDate::DATE                    AS recorded_date,
+            COALESCE(c.rj:onsetDateTime::DATE, c.rj:onsetPeriod:start::DATE) AS onset_date,
+            c.rj:abatementDateTime::DATE               AS resolved_date,
+            c.rj:clinicalStatus:coding[0]:code::VARCHAR AS status,
+            c.rj:category[0]:coding[0]:display::VARCHAR AS condition_type,
+            CASE
+                WHEN cd.code_system ILIKE '%snomed%' THEN 'snomed-ct'
+                WHEN cd.code_system ILIKE '%icd-10%' THEN 'icd-10-cm'
+                WHEN cd.code_system ILIKE '%icd-9%' THEN 'icd-9-cm'
+                ELSE cd.code_system
+            END                                        AS source_code_type,
+            cd.code_val                                AS source_code,
+            cd.code_display                            AS source_description,
+            CASE
+                WHEN cd.code_system ILIKE '%snomed%' THEN 'snomed-ct'
+                WHEN cd.code_system ILIKE '%icd-10%' THEN 'icd-10-cm'
+                WHEN cd.code_system ILIKE '%icd-9%' THEN 'icd-9-cm'
+                ELSE cd.code_system
+            END                                        AS normalized_code_type,
+            cd.code_val                                AS normalized_code,
+            cd.code_display                            AS normalized_description,
+            NULL::VARCHAR                              AS condition_rank,
+            NULL::VARCHAR                              AS present_on_admit_code,
+            NULL::VARCHAR                              AS present_on_admit_description,
+            '{data_source}'                            AS data_source,
+            NULL::VARCHAR                              AS file_name,
+            CURRENT_TIMESTAMP()                        AS ingest_datetime
+        FROM conditions c
+        LEFT JOIN codes cd ON cd.condition_id = c.condition_id
+    """).collect()
+
+    count = session.sql(f"SELECT COUNT(*) AS cnt FROM {output_schema}.condition").collect()[0]['CNT']
+    return f"Mapped {count} conditions to {output_schema}.condition"
+$$;
+GRANT USAGE ON PROCEDURE core.map_tuva_condition(VARCHAR, VARCHAR)
+    TO APPLICATION ROLE app_admin;
+
+CREATE OR REPLACE PROCEDURE core.map_tuva_lab_result(output_schema VARCHAR DEFAULT 'tuva_staging', data_source VARCHAR DEFAULT 'fhir')
+    RETURNS VARCHAR
+    LANGUAGE PYTHON
+    RUNTIME_VERSION = '3.11'
+    PACKAGES = ('snowflake-snowpark-python')
+    HANDLER = 'run'
+    EXECUTE AS OWNER
+AS
+$$
+def run(session, output_schema: str, data_source: str) -> str:
+    session.sql(f"CREATE SCHEMA IF NOT EXISTS {output_schema}").collect()
+
+    session.sql(f"""
+        CREATE OR REPLACE TABLE {output_schema}.lab_result (
+            lab_result_id               VARCHAR,
+            person_id                   INTEGER,
+            patient_id                  VARCHAR,
+            encounter_id                VARCHAR,
+            accession_number            VARCHAR,
+            source_code_type            VARCHAR,
+            source_code                 VARCHAR,
+            source_description          VARCHAR,
+            normalized_code_type        VARCHAR,
+            normalized_code             VARCHAR,
+            normalized_description      VARCHAR,
+            status                      VARCHAR,
+            result                      VARCHAR,
+            result_datetime             TIMESTAMP_NTZ,
+            collection_datetime         TIMESTAMP_NTZ,
+            source_units                VARCHAR,
+            normalized_units            VARCHAR,
+            source_reference_range_low  FLOAT,
+            source_reference_range_high FLOAT,
+            normalized_reference_range_low  FLOAT,
+            normalized_reference_range_high FLOAT,
+            source_abnormal_flag        VARCHAR,
+            normalized_abnormal_flag    VARCHAR,
+            specimen                    VARCHAR,
+            ordering_practitioner_id    VARCHAR,
+            data_source                 VARCHAR,
+            file_name                   VARCHAR,
+            ingest_datetime             TIMESTAMP_NTZ
+        )
+    """).collect()
+
+    session.sql(f"""
+        INSERT INTO {output_schema}.lab_result
+        WITH labs AS (
+            SELECT
+                r.resource_json:id::VARCHAR AS lab_result_id,
+                SPLIT_PART(r.resource_json:subject:reference::VARCHAR, '/', -1) AS patient_id,
+                SPLIT_PART(r.resource_json:encounter:reference::VARCHAR, '/', -1) AS encounter_id,
+                r.resource_json AS rj
+            FROM app_state.fhir_resources r
+            WHERE r.resource_type = 'Observation'
+              AND (r.resource_json:category[0]:coding[0]:code::VARCHAR = 'laboratory'
+                   OR r.resource_json:code:coding[0]:system::VARCHAR ILIKE '%loinc%')
+              AND r.resource_json:valueQuantity:value IS NOT NULL
+        )
+        SELECT
+            l.lab_result_id,
+            ABS(HASH(l.patient_id)) % 2147483647       AS person_id,
+            l.patient_id,
+            l.encounter_id,
+            NULL::VARCHAR                               AS accession_number,
+            CASE WHEN l.rj:code:coding[0]:system::VARCHAR ILIKE '%loinc%' THEN 'loinc' ELSE l.rj:code:coding[0]:system::VARCHAR END AS source_code_type,
+            l.rj:code:coding[0]:code::VARCHAR           AS source_code,
+            l.rj:code:coding[0]:display::VARCHAR        AS source_description,
+            CASE WHEN l.rj:code:coding[0]:system::VARCHAR ILIKE '%loinc%' THEN 'loinc' ELSE l.rj:code:coding[0]:system::VARCHAR END AS normalized_code_type,
+            l.rj:code:coding[0]:code::VARCHAR           AS normalized_code,
+            l.rj:code:coding[0]:display::VARCHAR        AS normalized_description,
+            l.rj:status::VARCHAR                        AS status,
+            l.rj:valueQuantity:value::VARCHAR           AS result,
+            l.rj:effectiveDateTime::TIMESTAMP_NTZ       AS result_datetime,
+            l.rj:effectiveDateTime::TIMESTAMP_NTZ       AS collection_datetime,
+            l.rj:valueQuantity:unit::VARCHAR             AS source_units,
+            l.rj:valueQuantity:unit::VARCHAR             AS normalized_units,
+            l.rj:referenceRange[0]:low:value::FLOAT     AS source_reference_range_low,
+            l.rj:referenceRange[0]:high:value::FLOAT    AS source_reference_range_high,
+            l.rj:referenceRange[0]:low:value::FLOAT     AS normalized_reference_range_low,
+            l.rj:referenceRange[0]:high:value::FLOAT    AS normalized_reference_range_high,
+            l.rj:interpretation[0]:coding[0]:code::VARCHAR AS source_abnormal_flag,
+            l.rj:interpretation[0]:coding[0]:code::VARCHAR AS normalized_abnormal_flag,
+            NULL::VARCHAR                               AS specimen,
+            SPLIT_PART(l.rj:performer[0]:reference::VARCHAR, '/', -1) AS ordering_practitioner_id,
+            '{data_source}'                             AS data_source,
+            NULL::VARCHAR                               AS file_name,
+            CURRENT_TIMESTAMP()                         AS ingest_datetime
+        FROM labs l
+    """).collect()
+
+    count = session.sql(f"SELECT COUNT(*) AS cnt FROM {output_schema}.lab_result").collect()[0]['CNT']
+    return f"Mapped {count} lab results to {output_schema}.lab_result"
+$$;
+GRANT USAGE ON PROCEDURE core.map_tuva_lab_result(VARCHAR, VARCHAR)
+    TO APPLICATION ROLE app_admin;
+
+CREATE OR REPLACE PROCEDURE core.map_tuva_observation(output_schema VARCHAR DEFAULT 'tuva_staging', data_source VARCHAR DEFAULT 'fhir')
+    RETURNS VARCHAR
+    LANGUAGE PYTHON
+    RUNTIME_VERSION = '3.11'
+    PACKAGES = ('snowflake-snowpark-python')
+    HANDLER = 'run'
+    EXECUTE AS OWNER
+AS
+$$
+def run(session, output_schema: str, data_source: str) -> str:
+    session.sql(f"CREATE SCHEMA IF NOT EXISTS {output_schema}").collect()
+
+    session.sql(f"""
+        CREATE OR REPLACE TABLE {output_schema}.observation (
+            observation_id              VARCHAR,
+            person_id                   INTEGER,
+            patient_id                  VARCHAR,
+            encounter_id                VARCHAR,
+            observation_date            DATE,
+            observation_type            VARCHAR,
+            source_code_type            VARCHAR,
+            source_code                 VARCHAR,
+            source_description          VARCHAR,
+            normalized_code_type        VARCHAR,
+            normalized_code             VARCHAR,
+            normalized_description      VARCHAR,
+            result                      VARCHAR,
+            source_units                VARCHAR,
+            normalized_units            VARCHAR,
+            source_reference_range_low  FLOAT,
+            source_reference_range_high FLOAT,
+            normalized_reference_range_low  FLOAT,
+            normalized_reference_range_high FLOAT,
+            data_source                 VARCHAR,
+            file_name                   VARCHAR,
+            ingest_datetime             TIMESTAMP_NTZ
+        )
+    """).collect()
+
+    session.sql(f"""
+        INSERT INTO {output_schema}.observation
+        WITH obs AS (
+            SELECT
+                r.resource_json:id::VARCHAR AS observation_id,
+                SPLIT_PART(r.resource_json:subject:reference::VARCHAR, '/', -1) AS patient_id,
+                SPLIT_PART(r.resource_json:encounter:reference::VARCHAR, '/', -1) AS encounter_id,
+                r.resource_json AS rj
+            FROM app_state.fhir_resources r
+            WHERE r.resource_type = 'Observation'
+              AND (r.resource_json:category[0]:coding[0]:code::VARCHAR != 'laboratory'
+                   OR r.resource_json:category[0]:coding[0]:code IS NULL)
+        )
+        SELECT
+            o.observation_id,
+            ABS(HASH(o.patient_id)) % 2147483647        AS person_id,
+            o.patient_id,
+            o.encounter_id,
+            o.rj:effectiveDateTime::DATE                AS observation_date,
+            o.rj:category[0]:coding[0]:display::VARCHAR AS observation_type,
+            CASE WHEN o.rj:code:coding[0]:system::VARCHAR ILIKE '%loinc%' THEN 'loinc'
+                 WHEN o.rj:code:coding[0]:system::VARCHAR ILIKE '%snomed%' THEN 'snomed-ct'
+                 ELSE o.rj:code:coding[0]:system::VARCHAR
+            END                                         AS source_code_type,
+            o.rj:code:coding[0]:code::VARCHAR           AS source_code,
+            o.rj:code:coding[0]:display::VARCHAR        AS source_description,
+            CASE WHEN o.rj:code:coding[0]:system::VARCHAR ILIKE '%loinc%' THEN 'loinc'
+                 WHEN o.rj:code:coding[0]:system::VARCHAR ILIKE '%snomed%' THEN 'snomed-ct'
+                 ELSE o.rj:code:coding[0]:system::VARCHAR
+            END                                         AS normalized_code_type,
+            o.rj:code:coding[0]:code::VARCHAR           AS normalized_code,
+            o.rj:code:coding[0]:display::VARCHAR        AS normalized_description,
+            COALESCE(o.rj:valueQuantity:value::VARCHAR, o.rj:valueString::VARCHAR, o.rj:valueCodeableConcept:text::VARCHAR) AS result,
+            o.rj:valueQuantity:unit::VARCHAR             AS source_units,
+            o.rj:valueQuantity:unit::VARCHAR             AS normalized_units,
+            o.rj:referenceRange[0]:low:value::FLOAT     AS source_reference_range_low,
+            o.rj:referenceRange[0]:high:value::FLOAT    AS source_reference_range_high,
+            o.rj:referenceRange[0]:low:value::FLOAT     AS normalized_reference_range_low,
+            o.rj:referenceRange[0]:high:value::FLOAT    AS normalized_reference_range_high,
+            '{data_source}'                             AS data_source,
+            NULL::VARCHAR                               AS file_name,
+            CURRENT_TIMESTAMP()                         AS ingest_datetime
+        FROM obs o
+    """).collect()
+
+    count = session.sql(f"SELECT COUNT(*) AS cnt FROM {output_schema}.observation").collect()[0]['CNT']
+    return f"Mapped {count} observations to {output_schema}.observation"
+$$;
+GRANT USAGE ON PROCEDURE core.map_tuva_observation(VARCHAR, VARCHAR)
+    TO APPLICATION ROLE app_admin;
+
+CREATE OR REPLACE PROCEDURE core.map_tuva_medication(output_schema VARCHAR DEFAULT 'tuva_staging', data_source VARCHAR DEFAULT 'fhir')
+    RETURNS VARCHAR
+    LANGUAGE PYTHON
+    RUNTIME_VERSION = '3.11'
+    PACKAGES = ('snowflake-snowpark-python')
+    HANDLER = 'run'
+    EXECUTE AS OWNER
+AS
+$$
+def run(session, output_schema: str, data_source: str) -> str:
+    session.sql(f"CREATE SCHEMA IF NOT EXISTS {output_schema}").collect()
+
+    session.sql(f"""
+        CREATE OR REPLACE TABLE {output_schema}.medication (
+            medication_id               VARCHAR,
+            person_id                   INTEGER,
+            patient_id                  VARCHAR,
+            encounter_id                VARCHAR,
+            dispensing_date             DATE,
+            prescribing_date            DATE,
+            source_code_type            VARCHAR,
+            source_code                 VARCHAR,
+            source_description          VARCHAR,
+            ndc_code                    VARCHAR,
+            ndc_description             VARCHAR,
+            rxnorm_code                 VARCHAR,
+            rxnorm_description          VARCHAR,
+            atc_code                    VARCHAR,
+            atc_description             VARCHAR,
+            route                       VARCHAR,
+            strength                    VARCHAR,
+            quantity                    INTEGER,
+            quantity_unit               VARCHAR,
+            days_supply                 INTEGER,
+            practitioner_id             VARCHAR,
+            data_source                 VARCHAR,
+            file_name                   VARCHAR,
+            ingest_datetime             TIMESTAMP_NTZ
+        )
+    """).collect()
+
+    session.sql(f"""
+        INSERT INTO {output_schema}.medication
+        WITH med_requests AS (
+            SELECT
+                resource_json:id::VARCHAR AS medication_id,
+                SPLIT_PART(resource_json:subject:reference::VARCHAR, '/', -1) AS patient_id,
+                SPLIT_PART(resource_json:encounter:reference::VARCHAR, '/', -1) AS encounter_id,
+                resource_json AS rj
+            FROM app_state.fhir_resources
+            WHERE resource_type = 'MedicationRequest'
+        )
+        SELECT
+            m.medication_id,
+            ABS(HASH(m.patient_id)) % 2147483647        AS person_id,
+            m.patient_id,
+            m.encounter_id,
+            NULL::DATE                                  AS dispensing_date,
+            m.rj:authoredOn::DATE                       AS prescribing_date,
+            CASE WHEN m.rj:medicationCodeableConcept:coding[0]:system::VARCHAR ILIKE '%rxnorm%' THEN 'rxnorm' ELSE m.rj:medicationCodeableConcept:coding[0]:system::VARCHAR END AS source_code_type,
+            m.rj:medicationCodeableConcept:coding[0]:code::VARCHAR    AS source_code,
+            m.rj:medicationCodeableConcept:coding[0]:display::VARCHAR AS source_description,
+            NULL::VARCHAR                               AS ndc_code,
+            NULL::VARCHAR                               AS ndc_description,
+            CASE WHEN m.rj:medicationCodeableConcept:coding[0]:system::VARCHAR ILIKE '%rxnorm%' THEN m.rj:medicationCodeableConcept:coding[0]:code::VARCHAR ELSE NULL END AS rxnorm_code,
+            CASE WHEN m.rj:medicationCodeableConcept:coding[0]:system::VARCHAR ILIKE '%rxnorm%' THEN m.rj:medicationCodeableConcept:coding[0]:display::VARCHAR ELSE NULL END AS rxnorm_description,
+            NULL::VARCHAR                               AS atc_code,
+            NULL::VARCHAR                               AS atc_description,
+            m.rj:dosageInstruction[0]:route:coding[0]:display::VARCHAR AS route,
+            NULL::VARCHAR                               AS strength,
+            m.rj:dispenseRequest:quantity:value::INTEGER AS quantity,
+            m.rj:dispenseRequest:quantity:unit::VARCHAR  AS quantity_unit,
+            m.rj:dispenseRequest:expectedSupplyDuration:value::INTEGER AS days_supply,
+            SPLIT_PART(m.rj:requester:reference::VARCHAR, '/', -1) AS practitioner_id,
+            '{data_source}'                             AS data_source,
+            NULL::VARCHAR                               AS file_name,
+            CURRENT_TIMESTAMP()                         AS ingest_datetime
+        FROM med_requests m
+    """).collect()
+
+    session.sql(f"""
+        INSERT INTO {output_schema}.medication
+        WITH med_admins AS (
+            SELECT
+                resource_json:id::VARCHAR AS medication_id,
+                SPLIT_PART(resource_json:subject:reference::VARCHAR, '/', -1) AS patient_id,
+                SPLIT_PART(resource_json:context:reference::VARCHAR, '/', -1) AS encounter_id,
+                resource_json AS rj
+            FROM app_state.fhir_resources
+            WHERE resource_type = 'MedicationAdministration'
+        )
+        SELECT
+            a.medication_id,
+            ABS(HASH(a.patient_id)) % 2147483647        AS person_id,
+            a.patient_id,
+            a.encounter_id,
+            a.rj:effectiveDateTime::DATE                AS dispensing_date,
+            NULL::DATE                                  AS prescribing_date,
+            CASE WHEN a.rj:medicationCodeableConcept:coding[0]:system::VARCHAR ILIKE '%rxnorm%' THEN 'rxnorm' ELSE a.rj:medicationCodeableConcept:coding[0]:system::VARCHAR END AS source_code_type,
+            a.rj:medicationCodeableConcept:coding[0]:code::VARCHAR    AS source_code,
+            a.rj:medicationCodeableConcept:coding[0]:display::VARCHAR AS source_description,
+            NULL::VARCHAR                               AS ndc_code,
+            NULL::VARCHAR                               AS ndc_description,
+            CASE WHEN a.rj:medicationCodeableConcept:coding[0]:system::VARCHAR ILIKE '%rxnorm%' THEN a.rj:medicationCodeableConcept:coding[0]:code::VARCHAR ELSE NULL END AS rxnorm_code,
+            CASE WHEN a.rj:medicationCodeableConcept:coding[0]:system::VARCHAR ILIKE '%rxnorm%' THEN a.rj:medicationCodeableConcept:coding[0]:display::VARCHAR ELSE NULL END AS rxnorm_description,
+            NULL::VARCHAR                               AS atc_code,
+            NULL::VARCHAR                               AS atc_description,
+            a.rj:dosage:route:coding[0]:display::VARCHAR AS route,
+            NULL::VARCHAR                               AS strength,
+            a.rj:dosage:dose:value::INTEGER             AS quantity,
+            a.rj:dosage:dose:unit::VARCHAR              AS quantity_unit,
+            NULL::INTEGER                               AS days_supply,
+            SPLIT_PART(a.rj:performer[0]:actor:reference::VARCHAR, '/', -1) AS practitioner_id,
+            '{data_source}'                             AS data_source,
+            NULL::VARCHAR                               AS file_name,
+            CURRENT_TIMESTAMP()                         AS ingest_datetime
+        FROM med_admins a
+    """).collect()
+
+    count = session.sql(f"SELECT COUNT(*) AS cnt FROM {output_schema}.medication").collect()[0]['CNT']
+    return f"Mapped {count} medications to {output_schema}.medication"
+$$;
+GRANT USAGE ON PROCEDURE core.map_tuva_medication(VARCHAR, VARCHAR)
+    TO APPLICATION ROLE app_admin;
+
+CREATE OR REPLACE PROCEDURE core.map_tuva_immunization(output_schema VARCHAR DEFAULT 'tuva_staging', data_source VARCHAR DEFAULT 'fhir')
+    RETURNS VARCHAR
+    LANGUAGE PYTHON
+    RUNTIME_VERSION = '3.11'
+    PACKAGES = ('snowflake-snowpark-python')
+    HANDLER = 'run'
+    EXECUTE AS OWNER
+AS
+$$
+def run(session, output_schema: str, data_source: str) -> str:
+    session.sql(f"CREATE SCHEMA IF NOT EXISTS {output_schema}").collect()
+
+    session.sql(f"""
+        CREATE OR REPLACE TABLE {output_schema}.immunization (
+            immunization_id             VARCHAR,
+            person_id                   INTEGER,
+            patient_id                  VARCHAR,
+            encounter_id                VARCHAR,
+            source_code_type            VARCHAR,
+            source_code                 VARCHAR,
+            source_description          VARCHAR,
+            normalized_code_type        VARCHAR,
+            normalized_code             VARCHAR,
+            normalized_description      VARCHAR,
+            status                      VARCHAR,
+            occurrence_date             DATE,
+            dose                        VARCHAR,
+            lot_number                  VARCHAR,
+            body_site                   VARCHAR,
+            route                       VARCHAR,
+            data_source                 VARCHAR,
+            file_name                   VARCHAR,
+            ingest_datetime             TIMESTAMP_NTZ
+        )
+    """).collect()
+
+    session.sql(f"""
+        INSERT INTO {output_schema}.immunization
+        WITH immunizations AS (
+            SELECT
+                resource_json:id::VARCHAR AS immunization_id,
+                SPLIT_PART(resource_json:patient:reference::VARCHAR, '/', -1) AS patient_id,
+                SPLIT_PART(resource_json:encounter:reference::VARCHAR, '/', -1) AS encounter_id,
+                resource_json AS rj
+            FROM app_state.fhir_resources
+            WHERE resource_type = 'Immunization'
+        )
+        SELECT
+            i.immunization_id,
+            ABS(HASH(i.patient_id)) % 2147483647        AS person_id,
+            i.patient_id,
+            i.encounter_id,
+            CASE WHEN i.rj:vaccineCode:coding[0]:system::VARCHAR ILIKE '%cvx%' THEN 'cvx' ELSE i.rj:vaccineCode:coding[0]:system::VARCHAR END AS source_code_type,
+            i.rj:vaccineCode:coding[0]:code::VARCHAR    AS source_code,
+            i.rj:vaccineCode:coding[0]:display::VARCHAR AS source_description,
+            CASE WHEN i.rj:vaccineCode:coding[0]:system::VARCHAR ILIKE '%cvx%' THEN 'cvx' ELSE i.rj:vaccineCode:coding[0]:system::VARCHAR END AS normalized_code_type,
+            i.rj:vaccineCode:coding[0]:code::VARCHAR    AS normalized_code,
+            i.rj:vaccineCode:coding[0]:display::VARCHAR AS normalized_description,
+            i.rj:status::VARCHAR                        AS status,
+            i.rj:occurrenceDateTime::DATE               AS occurrence_date,
+            i.rj:doseQuantity:value::VARCHAR            AS dose,
+            i.rj:lotNumber::VARCHAR                     AS lot_number,
+            i.rj:site:coding[0]:display::VARCHAR        AS body_site,
+            i.rj:route:coding[0]:display::VARCHAR       AS route,
+            '{data_source}'                             AS data_source,
+            NULL::VARCHAR                               AS file_name,
+            CURRENT_TIMESTAMP()                         AS ingest_datetime
+        FROM immunizations i
+    """).collect()
+
+    count = session.sql(f"SELECT COUNT(*) AS cnt FROM {output_schema}.immunization").collect()[0]['CNT']
+    return f"Mapped {count} immunizations to {output_schema}.immunization"
+$$;
+GRANT USAGE ON PROCEDURE core.map_tuva_immunization(VARCHAR, VARCHAR)
+    TO APPLICATION ROLE app_admin;
+
+CREATE OR REPLACE PROCEDURE core.map_tuva_procedure(output_schema VARCHAR DEFAULT 'tuva_staging', data_source VARCHAR DEFAULT 'fhir')
+    RETURNS VARCHAR
+    LANGUAGE PYTHON
+    RUNTIME_VERSION = '3.11'
+    PACKAGES = ('snowflake-snowpark-python')
+    HANDLER = 'run'
+    EXECUTE AS OWNER
+AS
+$$
+def run(session, output_schema: str, data_source: str) -> str:
+    session.sql(f"CREATE SCHEMA IF NOT EXISTS {output_schema}").collect()
+
+    session.sql(f"""
+        CREATE OR REPLACE TABLE {output_schema}.procedure (
+            procedure_id                VARCHAR,
+            person_id                   INTEGER,
+            patient_id                  VARCHAR,
+            encounter_id                VARCHAR,
+            claim_id                    VARCHAR,
+            procedure_date              DATE,
+            source_code_type            VARCHAR,
+            source_code                 VARCHAR,
+            source_description          VARCHAR,
+            normalized_code_type        VARCHAR,
+            normalized_code             VARCHAR,
+            normalized_description      VARCHAR,
+            modifier_1                  VARCHAR,
+            modifier_2                  VARCHAR,
+            modifier_3                  VARCHAR,
+            modifier_4                  VARCHAR,
+            modifier_5                  VARCHAR,
+            practitioner_id             VARCHAR,
+            data_source                 VARCHAR,
+            file_name                   VARCHAR,
+            ingest_datetime             TIMESTAMP_NTZ
+        )
+    """).collect()
+
+    session.sql(f"""
+        INSERT INTO {output_schema}.procedure
+        WITH procedures AS (
+            SELECT
+                resource_json:id::VARCHAR AS procedure_id,
+                SPLIT_PART(resource_json:subject:reference::VARCHAR, '/', -1) AS patient_id,
+                SPLIT_PART(resource_json:encounter:reference::VARCHAR, '/', -1) AS encounter_id,
+                resource_json AS rj
+            FROM app_state.fhir_resources
+            WHERE resource_type = 'Procedure'
+        )
+        SELECT
+            p.procedure_id,
+            ABS(HASH(p.patient_id)) % 2147483647        AS person_id,
+            p.patient_id,
+            p.encounter_id,
+            NULL::VARCHAR                               AS claim_id,
+            COALESCE(p.rj:performedDateTime::DATE, p.rj:performedPeriod:start::DATE) AS procedure_date,
+            CASE
+                WHEN p.rj:code:coding[0]:system::VARCHAR ILIKE '%snomed%' THEN 'snomed-ct'
+                WHEN p.rj:code:coding[0]:system::VARCHAR ILIKE '%cpt%' THEN 'cpt'
+                WHEN p.rj:code:coding[0]:system::VARCHAR ILIKE '%hcpcs%' THEN 'hcpcs'
+                ELSE p.rj:code:coding[0]:system::VARCHAR
+            END                                         AS source_code_type,
+            p.rj:code:coding[0]:code::VARCHAR           AS source_code,
+            p.rj:code:coding[0]:display::VARCHAR        AS source_description,
+            CASE
+                WHEN p.rj:code:coding[0]:system::VARCHAR ILIKE '%snomed%' THEN 'snomed-ct'
+                WHEN p.rj:code:coding[0]:system::VARCHAR ILIKE '%cpt%' THEN 'cpt'
+                WHEN p.rj:code:coding[0]:system::VARCHAR ILIKE '%hcpcs%' THEN 'hcpcs'
+                ELSE p.rj:code:coding[0]:system::VARCHAR
+            END                                         AS normalized_code_type,
+            p.rj:code:coding[0]:code::VARCHAR           AS normalized_code,
+            p.rj:code:coding[0]:display::VARCHAR        AS normalized_description,
+            NULL::VARCHAR                               AS modifier_1,
+            NULL::VARCHAR                               AS modifier_2,
+            NULL::VARCHAR                               AS modifier_3,
+            NULL::VARCHAR                               AS modifier_4,
+            NULL::VARCHAR                               AS modifier_5,
+            SPLIT_PART(p.rj:performer[0]:actor:reference::VARCHAR, '/', -1) AS practitioner_id,
+            '{data_source}'                             AS data_source,
+            NULL::VARCHAR                               AS file_name,
+            CURRENT_TIMESTAMP()                         AS ingest_datetime
+        FROM procedures p
+    """).collect()
+
+    count = session.sql(f"SELECT COUNT(*) AS cnt FROM {output_schema}.procedure").collect()[0]['CNT']
+    return f"Mapped {count} procedures to {output_schema}.procedure"
+$$;
+GRANT USAGE ON PROCEDURE core.map_tuva_procedure(VARCHAR, VARCHAR)
+    TO APPLICATION ROLE app_admin;
+
+CREATE OR REPLACE PROCEDURE core.map_tuva_location(output_schema VARCHAR DEFAULT 'tuva_staging', data_source VARCHAR DEFAULT 'fhir')
+    RETURNS VARCHAR
+    LANGUAGE PYTHON
+    RUNTIME_VERSION = '3.11'
+    PACKAGES = ('snowflake-snowpark-python')
+    HANDLER = 'run'
+    EXECUTE AS OWNER
+AS
+$$
+def run(session, output_schema: str, data_source: str) -> str:
+    session.sql(f"CREATE SCHEMA IF NOT EXISTS {output_schema}").collect()
+
+    session.sql(f"""
+        CREATE OR REPLACE TABLE {output_schema}.location (
+            location_id                 VARCHAR,
+            npi                         VARCHAR,
+            name                        VARCHAR,
+            facility_type               VARCHAR,
+            parent_organization         VARCHAR,
+            address                     VARCHAR,
+            city                        VARCHAR,
+            state                       VARCHAR,
+            zip_code                    VARCHAR,
+            latitude                    FLOAT,
+            longitude                   FLOAT,
+            data_source                 VARCHAR,
+            file_name                   VARCHAR,
+            ingest_datetime             TIMESTAMP_NTZ
+        )
+    """).collect()
+
+    session.sql(f"""
+        INSERT INTO {output_schema}.location
+        WITH locations AS (
+            SELECT
+                resource_json:id::VARCHAR AS location_id,
+                resource_json AS rj
+            FROM app_state.fhir_resources
+            WHERE resource_type = 'Location'
+        ),
+        npi_ext AS (
+            SELECT l.location_id,
+                   i.value:value::VARCHAR AS npi_value
+            FROM locations l,
+                LATERAL FLATTEN(input => l.rj:identifier, OUTER => TRUE) i
+            WHERE i.value:system::VARCHAR ILIKE '%npi%'
+        )
+        SELECT
+            l.location_id,
+            n.npi_value                                 AS npi,
+            l.rj:name::VARCHAR                          AS name,
+            l.rj:type[0]:coding[0]:display::VARCHAR     AS facility_type,
+            SPLIT_PART(l.rj:managingOrganization:reference::VARCHAR, '/', -1) AS parent_organization,
+            l.rj:address:line[0]::VARCHAR               AS address,
+            l.rj:address:city::VARCHAR                  AS city,
+            l.rj:address:state::VARCHAR                 AS state,
+            l.rj:address:postalCode::VARCHAR            AS zip_code,
+            l.rj:position:latitude::FLOAT               AS latitude,
+            l.rj:position:longitude::FLOAT              AS longitude,
+            '{data_source}'                             AS data_source,
+            NULL::VARCHAR                               AS file_name,
+            CURRENT_TIMESTAMP()                         AS ingest_datetime
+        FROM locations l
+        LEFT JOIN npi_ext n ON n.location_id = l.location_id
+    """).collect()
+
+    session.sql(f"""
+        INSERT INTO {output_schema}.location
+        WITH orgs AS (
+            SELECT
+                resource_json:id::VARCHAR AS org_id,
+                resource_json AS rj
+            FROM app_state.fhir_resources
+            WHERE resource_type = 'Organization'
+        ),
+        org_npi AS (
+            SELECT o.org_id,
+                   i.value:value::VARCHAR AS npi_value
+            FROM orgs o,
+                LATERAL FLATTEN(input => o.rj:identifier, OUTER => TRUE) i
+            WHERE i.value:system::VARCHAR ILIKE '%npi%'
+        )
+        SELECT
+            o.org_id                                    AS location_id,
+            n.npi_value                                 AS npi,
+            o.rj:name::VARCHAR                          AS name,
+            o.rj:type[0]:coding[0]:display::VARCHAR     AS facility_type,
+            NULL::VARCHAR                               AS parent_organization,
+            o.rj:address[0]:line[0]::VARCHAR            AS address,
+            o.rj:address[0]:city::VARCHAR               AS city,
+            o.rj:address[0]:state::VARCHAR              AS state,
+            o.rj:address[0]:postalCode::VARCHAR         AS zip_code,
+            NULL::FLOAT                                 AS latitude,
+            NULL::FLOAT                                 AS longitude,
+            '{data_source}'                             AS data_source,
+            NULL::VARCHAR                               AS file_name,
+            CURRENT_TIMESTAMP()                         AS ingest_datetime
+        FROM orgs o
+        LEFT JOIN org_npi n ON n.org_id = o.org_id
+    """).collect()
+
+    count = session.sql(f"SELECT COUNT(*) AS cnt FROM {output_schema}.location").collect()[0]['CNT']
+    return f"Mapped {count} locations to {output_schema}.location"
+$$;
+GRANT USAGE ON PROCEDURE core.map_tuva_location(VARCHAR, VARCHAR)
+    TO APPLICATION ROLE app_admin;
+
+CREATE OR REPLACE PROCEDURE core.map_tuva_practitioner(output_schema VARCHAR DEFAULT 'tuva_staging', data_source VARCHAR DEFAULT 'fhir')
+    RETURNS VARCHAR
+    LANGUAGE PYTHON
+    RUNTIME_VERSION = '3.11'
+    PACKAGES = ('snowflake-snowpark-python')
+    HANDLER = 'run'
+    EXECUTE AS OWNER
+AS
+$$
+def run(session, output_schema: str, data_source: str) -> str:
+    session.sql(f"CREATE SCHEMA IF NOT EXISTS {output_schema}").collect()
+
+    session.sql(f"""
+        CREATE OR REPLACE TABLE {output_schema}.practitioner (
+            practitioner_id             VARCHAR,
+            npi                         VARCHAR,
+            first_name                  VARCHAR,
+            last_name                   VARCHAR,
+            practice_affiliation        VARCHAR,
+            specialty                   VARCHAR,
+            sub_specialty               VARCHAR,
+            data_source                 VARCHAR,
+            file_name                   VARCHAR,
+            ingest_datetime             TIMESTAMP_NTZ
+        )
+    """).collect()
+
+    session.sql(f"""
+        INSERT INTO {output_schema}.practitioner
+        WITH practitioners AS (
+            SELECT
+                resource_json:id::VARCHAR AS practitioner_id,
+                resource_json AS rj
+            FROM app_state.fhir_resources
+            WHERE resource_type = 'Practitioner'
+        ),
+        npi_ext AS (
+            SELECT p.practitioner_id,
+                   i.value:value::VARCHAR AS npi_value
+            FROM practitioners p,
+                LATERAL FLATTEN(input => p.rj:identifier, OUTER => TRUE) i
+            WHERE i.value:system::VARCHAR ILIKE '%npi%'
+        )
+        SELECT
+            p.practitioner_id,
+            n.npi_value                                 AS npi,
+            p.rj:name[0]:given[0]::VARCHAR              AS first_name,
+            p.rj:name[0]:family::VARCHAR                AS last_name,
+            NULL::VARCHAR                               AS practice_affiliation,
+            p.rj:qualification[0]:code:coding[0]:display::VARCHAR AS specialty,
+            NULL::VARCHAR                               AS sub_specialty,
+            '{data_source}'                             AS data_source,
+            NULL::VARCHAR                               AS file_name,
+            CURRENT_TIMESTAMP()                         AS ingest_datetime
+        FROM practitioners p
+        LEFT JOIN npi_ext n ON n.practitioner_id = p.practitioner_id
+    """).collect()
+
+    count = session.sql(f"SELECT COUNT(*) AS cnt FROM {output_schema}.practitioner").collect()[0]['CNT']
+    return f"Mapped {count} practitioners to {output_schema}.practitioner"
+$$;
+GRANT USAGE ON PROCEDURE core.map_tuva_practitioner(VARCHAR, VARCHAR)
+    TO APPLICATION ROLE app_admin;
+
+CREATE OR REPLACE PROCEDURE core.map_tuva_medical_claim(output_schema VARCHAR DEFAULT 'tuva_staging', data_source VARCHAR DEFAULT 'fhir')
+    RETURNS VARCHAR
+    LANGUAGE PYTHON
+    RUNTIME_VERSION = '3.11'
+    PACKAGES = ('snowflake-snowpark-python')
+    HANDLER = 'run'
+    EXECUTE AS OWNER
+AS
+$$
+def run(session, output_schema: str, data_source: str) -> str:
+    session.sql(f"CREATE SCHEMA IF NOT EXISTS {output_schema}").collect()
+
+    session.sql(f"""
+        CREATE OR REPLACE TABLE {output_schema}.medical_claim (
+            medical_claim_id            VARCHAR,
+            claim_id                    VARCHAR,
+            claim_line_number           INTEGER,
+            claim_type                  VARCHAR,
+            person_id                   INTEGER,
+            patient_id                  VARCHAR,
+            member_id                   VARCHAR,
+            payer                       VARCHAR,
+            plan                        VARCHAR,
+            encounter_id                VARCHAR,
+            claim_start_date            DATE,
+            claim_end_date              DATE,
+            admission_date              DATE,
+            discharge_date              DATE,
+            service_category_1          VARCHAR,
+            service_category_2          VARCHAR,
+            service_category_3          VARCHAR,
+            drg_code                    VARCHAR,
+            drg_code_type               VARCHAR,
+            drg_description             VARCHAR,
+            place_of_service_code       VARCHAR,
+            place_of_service_description VARCHAR,
+            revenue_center_code         VARCHAR,
+            revenue_center_description  VARCHAR,
+            hcpcs_code                  VARCHAR,
+            hcpcs_modifier_1            VARCHAR,
+            hcpcs_modifier_2            VARCHAR,
+            hcpcs_modifier_3            VARCHAR,
+            hcpcs_modifier_4            VARCHAR,
+            hcpcs_modifier_5            VARCHAR,
+            rendering_id                VARCHAR,
+            billing_id                  VARCHAR,
+            facility_id                 VARCHAR,
+            paid_date                   DATE,
+            paid_amount                 FLOAT,
+            allowed_amount              FLOAT,
+            charge_amount               FLOAT,
+            data_source                 VARCHAR,
+            file_name                   VARCHAR,
+            ingest_datetime             TIMESTAMP_NTZ
+        )
+    """).collect()
+
+    session.sql(f"""
+        INSERT INTO {output_schema}.medical_claim
+        WITH claims AS (
+            SELECT
+                resource_json:id::VARCHAR AS claim_id,
+                SPLIT_PART(resource_json:patient:reference::VARCHAR, '/', -1) AS patient_id,
+                resource_json AS rj
+            FROM app_state.fhir_resources
+            WHERE resource_type = 'Claim'
+        ),
+        claim_items AS (
+            SELECT
+                c.claim_id,
+                c.patient_id,
+                c.rj,
+                item.index AS item_idx,
+                item.value AS item_val
+            FROM claims c,
+                LATERAL FLATTEN(input => c.rj:item, OUTER => TRUE) item
+        )
+        SELECT
+            ci.claim_id || '-' || (ci.item_idx + 1)::VARCHAR AS medical_claim_id,
+            ci.claim_id,
+            (ci.item_idx + 1)::INTEGER                  AS claim_line_number,
+            ci.rj:type:coding[0]:display::VARCHAR       AS claim_type,
+            ABS(HASH(ci.patient_id)) % 2147483647       AS person_id,
+            ci.patient_id,
+            NULL::VARCHAR                               AS member_id,
+            COALESCE(ci.rj:insurer:display::VARCHAR, ci.rj:insurance[0]:coverage:display::VARCHAR) AS payer,
+            NULL::VARCHAR                               AS plan,
+            NULL::VARCHAR                               AS encounter_id,
+            ci.rj:billablePeriod:start::DATE            AS claim_start_date,
+            ci.rj:billablePeriod:end::DATE              AS claim_end_date,
+            NULL::DATE                                  AS admission_date,
+            NULL::DATE                                  AS discharge_date,
+            NULL::VARCHAR                               AS service_category_1,
+            NULL::VARCHAR                               AS service_category_2,
+            NULL::VARCHAR                               AS service_category_3,
+            NULL::VARCHAR                               AS drg_code,
+            NULL::VARCHAR                               AS drg_code_type,
+            NULL::VARCHAR                               AS drg_description,
+            ci.rj:facility:coding[0]:code::VARCHAR      AS place_of_service_code,
+            ci.rj:facility:display::VARCHAR             AS place_of_service_description,
+            ci.item_val:revenue:coding[0]:code::VARCHAR AS revenue_center_code,
+            ci.item_val:revenue:coding[0]:display::VARCHAR AS revenue_center_description,
+            ci.item_val:productOrService:coding[0]:code::VARCHAR AS hcpcs_code,
+            ci.item_val:modifier[0]:coding[0]:code::VARCHAR AS hcpcs_modifier_1,
+            ci.item_val:modifier[1]:coding[0]:code::VARCHAR AS hcpcs_modifier_2,
+            ci.item_val:modifier[2]:coding[0]:code::VARCHAR AS hcpcs_modifier_3,
+            ci.item_val:modifier[3]:coding[0]:code::VARCHAR AS hcpcs_modifier_4,
+            ci.item_val:modifier[4]:coding[0]:code::VARCHAR AS hcpcs_modifier_5,
+            SPLIT_PART(ci.rj:careTeam[0]:provider:reference::VARCHAR, '/', -1) AS rendering_id,
+            SPLIT_PART(ci.rj:provider:reference::VARCHAR, '/', -1) AS billing_id,
+            SPLIT_PART(ci.rj:facility:reference::VARCHAR, '/', -1) AS facility_id,
+            ci.rj:payment:date::DATE                    AS paid_date,
+            ci.rj:payment:amount:value::FLOAT           AS paid_amount,
+            ci.rj:total:amount:value::FLOAT             AS allowed_amount,
+            ci.item_val:net:value::FLOAT                AS charge_amount,
+            '{data_source}'                             AS data_source,
+            NULL::VARCHAR                               AS file_name,
+            CURRENT_TIMESTAMP()                         AS ingest_datetime
+        FROM claim_items ci
+    """).collect()
+
+    session.sql(f"""
+        INSERT INTO {output_schema}.medical_claim
+        WITH eobs AS (
+            SELECT
+                resource_json:id::VARCHAR AS eob_id,
+                SPLIT_PART(resource_json:patient:reference::VARCHAR, '/', -1) AS patient_id,
+                resource_json AS rj
+            FROM app_state.fhir_resources
+            WHERE resource_type = 'ExplanationOfBenefit'
+        ),
+        eob_items AS (
+            SELECT
+                e.eob_id,
+                e.patient_id,
+                e.rj,
+                item.index AS item_idx,
+                item.value AS item_val
+            FROM eobs e,
+                LATERAL FLATTEN(input => e.rj:item, OUTER => TRUE) item
+        )
+        SELECT
+            ei.eob_id || '-' || (ei.item_idx + 1)::VARCHAR AS medical_claim_id,
+            ei.eob_id                                   AS claim_id,
+            (ei.item_idx + 1)::INTEGER                  AS claim_line_number,
+            ei.rj:type:coding[0]:display::VARCHAR       AS claim_type,
+            ABS(HASH(ei.patient_id)) % 2147483647       AS person_id,
+            ei.patient_id,
+            NULL::VARCHAR                               AS member_id,
+            COALESCE(ei.rj:insurer:display::VARCHAR, ei.rj:insurance[0]:coverage:display::VARCHAR) AS payer,
+            NULL::VARCHAR                               AS plan,
+            NULL::VARCHAR                               AS encounter_id,
+            ei.rj:billablePeriod:start::DATE            AS claim_start_date,
+            ei.rj:billablePeriod:end::DATE              AS claim_end_date,
+            NULL::DATE                                  AS admission_date,
+            NULL::DATE                                  AS discharge_date,
+            NULL::VARCHAR                               AS service_category_1,
+            NULL::VARCHAR                               AS service_category_2,
+            NULL::VARCHAR                               AS service_category_3,
+            NULL::VARCHAR                               AS drg_code,
+            NULL::VARCHAR                               AS drg_code_type,
+            NULL::VARCHAR                               AS drg_description,
+            ei.rj:facility:coding[0]:code::VARCHAR      AS place_of_service_code,
+            ei.rj:facility:display::VARCHAR             AS place_of_service_description,
+            ei.item_val:revenue:coding[0]:code::VARCHAR AS revenue_center_code,
+            ei.item_val:revenue:coding[0]:display::VARCHAR AS revenue_center_description,
+            ei.item_val:productOrService:coding[0]:code::VARCHAR AS hcpcs_code,
+            ei.item_val:modifier[0]:coding[0]:code::VARCHAR AS hcpcs_modifier_1,
+            ei.item_val:modifier[1]:coding[0]:code::VARCHAR AS hcpcs_modifier_2,
+            ei.item_val:modifier[2]:coding[0]:code::VARCHAR AS hcpcs_modifier_3,
+            ei.item_val:modifier[3]:coding[0]:code::VARCHAR AS hcpcs_modifier_4,
+            ei.item_val:modifier[4]:coding[0]:code::VARCHAR AS hcpcs_modifier_5,
+            SPLIT_PART(ei.rj:careTeam[0]:provider:reference::VARCHAR, '/', -1) AS rendering_id,
+            SPLIT_PART(ei.rj:provider:reference::VARCHAR, '/', -1) AS billing_id,
+            SPLIT_PART(ei.rj:facility:reference::VARCHAR, '/', -1) AS facility_id,
+            ei.rj:payment:date::DATE                    AS paid_date,
+            ei.rj:payment:amount:value::FLOAT           AS paid_amount,
+            ei.rj:total[0]:amount:value::FLOAT          AS allowed_amount,
+            ei.item_val:net:value::FLOAT                AS charge_amount,
+            '{data_source}'                             AS data_source,
+            NULL::VARCHAR                               AS file_name,
+            CURRENT_TIMESTAMP()                         AS ingest_datetime
+        FROM eob_items ei
+    """).collect()
+
+    count = session.sql(f"SELECT COUNT(*) AS cnt FROM {output_schema}.medical_claim").collect()[0]['CNT']
+    return f"Mapped {count} medical claims to {output_schema}.medical_claim"
+$$;
+GRANT USAGE ON PROCEDURE core.map_tuva_medical_claim(VARCHAR, VARCHAR)
+    TO APPLICATION ROLE app_admin;
+
+CREATE OR REPLACE PROCEDURE core.map_tuva_eligibility(output_schema VARCHAR DEFAULT 'tuva_staging', data_source VARCHAR DEFAULT 'fhir')
+    RETURNS VARCHAR
+    LANGUAGE PYTHON
+    RUNTIME_VERSION = '3.11'
+    PACKAGES = ('snowflake-snowpark-python')
+    HANDLER = 'run'
+    EXECUTE AS OWNER
+AS
+$$
+def run(session, output_schema: str, data_source: str) -> str:
+    session.sql(f"CREATE SCHEMA IF NOT EXISTS {output_schema}").collect()
+
+    session.sql(f"""
+        CREATE OR REPLACE TABLE {output_schema}.eligibility (
+            eligibility_id              VARCHAR,
+            person_id                   INTEGER,
+            patient_id                  VARCHAR,
+            member_id                   VARCHAR,
+            enrollment_start_date       DATE,
+            enrollment_end_date         DATE,
+            payer                       VARCHAR,
+            payer_type                  VARCHAR,
+            plan                        VARCHAR,
+            original_reason_entitlement_code VARCHAR,
+            dual_status_code            VARCHAR,
+            medicare_status_code        VARCHAR,
+            data_source                 VARCHAR,
+            file_name                   VARCHAR,
+            ingest_datetime             TIMESTAMP_NTZ
+        )
+    """).collect()
+
+    session.sql(f"""
+        INSERT INTO {output_schema}.eligibility
+        WITH coverages AS (
+            SELECT
+                resource_json:id::VARCHAR AS coverage_id,
+                SPLIT_PART(resource_json:beneficiary:reference::VARCHAR, '/', -1) AS patient_id,
+                resource_json AS rj
+            FROM app_state.fhir_resources
+            WHERE resource_type = 'Coverage'
+        ),
+        plan_class AS (
+            SELECT cv.coverage_id,
+                   cl.value:value::VARCHAR AS plan_name
+            FROM coverages cv,
+                LATERAL FLATTEN(input => cv.rj:class, OUTER => TRUE) cl
+            WHERE cl.value:type:coding[0]:code::VARCHAR = 'plan'
+        )
+        SELECT
+            cv.coverage_id                              AS eligibility_id,
+            ABS(HASH(cv.patient_id)) % 2147483647      AS person_id,
+            cv.patient_id,
+            cv.rj:subscriberId::VARCHAR                 AS member_id,
+            cv.rj:period:start::DATE                    AS enrollment_start_date,
+            cv.rj:period:end::DATE                      AS enrollment_end_date,
+            cv.rj:payor[0]:display::VARCHAR             AS payer,
+            cv.rj:type:coding[0]:display::VARCHAR       AS payer_type,
+            pc.plan_name                                AS plan,
+            NULL::VARCHAR                               AS original_reason_entitlement_code,
+            NULL::VARCHAR                               AS dual_status_code,
+            NULL::VARCHAR                               AS medicare_status_code,
+            '{data_source}'                             AS data_source,
+            NULL::VARCHAR                               AS file_name,
+            CURRENT_TIMESTAMP()                         AS ingest_datetime
+        FROM coverages cv
+        LEFT JOIN plan_class pc ON pc.coverage_id = cv.coverage_id
+    """).collect()
+
+    count = session.sql(f"SELECT COUNT(*) AS cnt FROM {output_schema}.eligibility").collect()[0]['CNT']
+    return f"Mapped {count} eligibility records to {output_schema}.eligibility"
+$$;
+GRANT USAGE ON PROCEDURE core.map_tuva_eligibility(VARCHAR, VARCHAR)
+    TO APPLICATION ROLE app_admin;
+
+CREATE OR REPLACE PROCEDURE core.map_tuva_appointment(output_schema VARCHAR DEFAULT 'tuva_staging', data_source VARCHAR DEFAULT 'fhir')
+    RETURNS VARCHAR
+    LANGUAGE PYTHON
+    RUNTIME_VERSION = '3.11'
+    PACKAGES = ('snowflake-snowpark-python')
+    HANDLER = 'run'
+    EXECUTE AS OWNER
+AS
+$$
+def run(session, output_schema: str, data_source: str) -> str:
+    session.sql(f"CREATE SCHEMA IF NOT EXISTS {output_schema}").collect()
+
+    session.sql(f"""
+        CREATE OR REPLACE TABLE {output_schema}.appointment (
+            appointment_id              VARCHAR,
+            person_id                   INTEGER,
+            patient_id                  VARCHAR,
+            encounter_id                VARCHAR,
+            appointment_start_datetime  TIMESTAMP_NTZ,
+            appointment_end_datetime    TIMESTAMP_NTZ,
+            duration                    INTEGER,
+            location_id                 VARCHAR,
+            practitioner_id             VARCHAR,
+            source_code_type            VARCHAR,
+            source_code                 VARCHAR,
+            source_description          VARCHAR,
+            normalized_code_type        VARCHAR,
+            normalized_code             VARCHAR,
+            normalized_description      VARCHAR,
+            status                      VARCHAR,
+            data_source                 VARCHAR,
+            file_name                   VARCHAR,
+            ingest_datetime             TIMESTAMP_NTZ
+        )
+    """).collect()
+
+    session.sql(f"""
+        INSERT INTO {output_schema}.appointment
+        WITH appointments AS (
+            SELECT
+                resource_json:id::VARCHAR AS appointment_id,
+                resource_json AS rj
+            FROM app_state.fhir_resources
+            WHERE resource_type = 'Appointment'
+        ),
+        patient_part AS (
+            SELECT a.appointment_id,
+                   SPLIT_PART(p.value:actor:reference::VARCHAR, '/', -1) AS patient_id
+            FROM appointments a,
+                LATERAL FLATTEN(input => a.rj:participant, OUTER => TRUE) p
+            WHERE p.value:actor:reference::VARCHAR LIKE 'Patient/%'
+        ),
+        practitioner_part AS (
+            SELECT a.appointment_id,
+                   SPLIT_PART(p.value:actor:reference::VARCHAR, '/', -1) AS practitioner_id
+            FROM appointments a,
+                LATERAL FLATTEN(input => a.rj:participant, OUTER => TRUE) p
+            WHERE p.value:actor:reference::VARCHAR LIKE 'Practitioner/%'
+        ),
+        location_part AS (
+            SELECT a.appointment_id,
+                   SPLIT_PART(p.value:actor:reference::VARCHAR, '/', -1) AS location_id
+            FROM appointments a,
+                LATERAL FLATTEN(input => a.rj:participant, OUTER => TRUE) p
+            WHERE p.value:actor:reference::VARCHAR LIKE 'Location/%'
+        )
+        SELECT
+            a.appointment_id,
+            ABS(HASH(pp.patient_id)) % 2147483647       AS person_id,
+            pp.patient_id,
+            NULL::VARCHAR                               AS encounter_id,
+            a.rj:start::TIMESTAMP_NTZ                   AS appointment_start_datetime,
+            a.rj:end::TIMESTAMP_NTZ                     AS appointment_end_datetime,
+            a.rj:minutesDuration::INTEGER               AS duration,
+            lp.location_id,
+            pr.practitioner_id,
+            a.rj:appointmentType:coding[0]:system::VARCHAR AS source_code_type,
+            a.rj:appointmentType:coding[0]:code::VARCHAR   AS source_code,
+            a.rj:appointmentType:coding[0]:display::VARCHAR AS source_description,
+            a.rj:appointmentType:coding[0]:system::VARCHAR AS normalized_code_type,
+            a.rj:appointmentType:coding[0]:code::VARCHAR   AS normalized_code,
+            a.rj:appointmentType:coding[0]:display::VARCHAR AS normalized_description,
+            a.rj:status::VARCHAR                        AS status,
+            '{data_source}'                             AS data_source,
+            NULL::VARCHAR                               AS file_name,
+            CURRENT_TIMESTAMP()                         AS ingest_datetime
+        FROM appointments a
+        LEFT JOIN patient_part pp ON pp.appointment_id = a.appointment_id
+        LEFT JOIN practitioner_part pr ON pr.appointment_id = a.appointment_id
+        LEFT JOIN location_part lp ON lp.appointment_id = a.appointment_id
+    """).collect()
+
+    count = session.sql(f"SELECT COUNT(*) AS cnt FROM {output_schema}.appointment").collect()[0]['CNT']
+    return f"Mapped {count} appointments to {output_schema}.appointment"
+$$;
+GRANT USAGE ON PROCEDURE core.map_tuva_appointment(VARCHAR, VARCHAR)
+    TO APPLICATION ROLE app_admin;

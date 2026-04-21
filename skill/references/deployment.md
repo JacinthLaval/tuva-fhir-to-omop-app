@@ -97,8 +97,45 @@ A convenience script that combines all PUT + CREATE commands. Key notes:
 
 ## Performance Benchmarks
 
-| Bundles | Warehouse | Duration | Persons | Conditions | Measurements | Visits |
-|---------|-----------|----------|---------|------------|--------------|--------|
-| 1 | X-Small | ~17s | 2 | 5 | 23 | 1 |
-| 10 | X-Small | ~27s | 20 | 38 | 231 | 10 |
-| 1,000 | X-Small | ~65s | 2,000 | 3,520 | 22,725 | 1,000 |
+| Version | Bundles | Format | Output | Warehouse | Duration | Key Counts |
+|---------|---------|--------|--------|-----------|----------|------------|
+| V1_2 | 1 | JSON | OMOP | X-Small | ~17s | 2 persons, 5 conditions, 23 measurements |
+| V1_2 | 10 | JSON | OMOP | X-Small | ~27s | 20 persons, 38 conditions, 231 measurements |
+| V1_2 | 1,000 | JSON | OMOP | X-Small | ~65s | 2,000 persons, 3,520 conditions, 22,725 measurements |
+| V1_4 | 4,013 | HL7v2 | OMOP | X-Small | ~270s | MS_FIMR HL7v2 messages, all 10 resource types |
+
+## Release Channel Management
+
+**Max 2 versions per channel.** Must drop one before adding another:
+```sql
+ALTER APPLICATION PACKAGE <PKG>
+    MODIFY RELEASE CHANNEL ALPHA DROP VERSION V1_4;
+ALTER APPLICATION PACKAGE <PKG>
+    MODIFY RELEASE CHANNEL ALPHA ADD VERSION V1_6;
+ALTER APPLICATION PACKAGE <PKG>
+    MODIFY RELEASE CHANNEL ALPHA
+    SET DEFAULT RELEASE DIRECTIVE VERSION = V1_6 PATCH = 0;
+```
+
+**Release channel syntax (with channels enabled):** Use `REGISTER VERSION` / `DEREGISTER VERSION`, NOT `ADD VERSION` / `DROP VERSION`.
+
+**Dev-mode apps can't auto-upgrade to new versions** — must DROP and recreate:
+```sql
+DROP APPLICATION IF EXISTS <APP_NAME>;
+CREATE APPLICATION <APP_NAME> FROM APPLICATION PACKAGE <PKG_NAME> USING RELEASE CHANNEL ALPHA;
+-- Then re-grant all access:
+GRANT USAGE ON DATABASE <DB> TO APPLICATION <APP_NAME>;
+GRANT USAGE ON SCHEMA <DB>.<SCHEMA> TO APPLICATION <APP_NAME>;
+GRANT SELECT ON ALL TABLES IN SCHEMA <DB>.<SCHEMA> TO APPLICATION <APP_NAME>;
+GRANT CREATE SCHEMA ON DATABASE <DB> TO APPLICATION <APP_NAME>;
+GRANT USAGE ON WAREHOUSE <WH> TO APPLICATION <APP_NAME>;
+```
+
+**CRITICAL: Patches vs Versions**
+- Patches update stage files but do NOT re-execute setup.sql — stored procs are NOT recreated
+- New stored procs require a new VERSION (not just a patch)
+- Use patches only for Streamlit UI or static content changes
+
+**Channel switching (no UI):** Provider controls via SQL only. Must assign account to channel, then consumer must DROP and CREATE APPLICATION ... USING RELEASE CHANNEL <name>.
+
+**DEFAULT channel directive for external accounts** requires security review approval per-version.

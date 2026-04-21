@@ -1,0 +1,593 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HL7v2/FHIR to OMOP/Tuva Transformer — Snowflake Native App</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/icon?family=Material+Icons+Round" rel="stylesheet">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0b1120;--bg2:#111827;--bg3:#1a2332;--bg4:#1f2b3d;
+  --text:#e2e8f0;--text2:#94a3b8;--text3:#64748b;
+  --accent:#29B5E8;--accent2:#0ea5e9;--accent-glow:rgba(41,181,232,0.15);
+  --green:#10b981;--green-bg:rgba(16,185,129,0.12);
+  --purple:#a78bfa;--purple-bg:rgba(167,139,250,0.12);
+  --orange:#f59e0b;--orange-bg:rgba(245,158,11,0.12);
+  --red:#ef4444;
+  --card-border:rgba(255,255,255,0.06);
+  --radius:12px;--radius-lg:16px;
+}
+html{scroll-behavior:smooth;font-size:16px}
+body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--text);line-height:1.6;overflow-x:hidden}
+a{color:var(--accent);text-decoration:none;transition:color .2s}
+a:hover{color:#7dd3fc}
+
+/* NAV */
+nav{position:fixed;top:0;left:0;right:0;z-index:100;background:rgba(11,17,32,0.85);backdrop-filter:blur(16px);border-bottom:1px solid var(--card-border);transition:box-shadow .3s}
+nav.scrolled{box-shadow:0 4px 30px rgba(0,0,0,0.4)}
+.nav-inner{max-width:1200px;margin:0 auto;display:flex;align-items:center;justify-content:space-between;padding:0 2rem;height:64px}
+.nav-logo{display:flex;align-items:center;gap:.5rem;font-weight:700;font-size:.95rem;color:var(--accent)}
+.nav-logo svg{width:28px;height:28px}
+.nav-links{display:flex;gap:1.5rem;list-style:none}
+.nav-links a{font-size:.85rem;font-weight:500;color:var(--text2);transition:color .2s}
+.nav-links a:hover,.nav-links a.active{color:var(--accent)}
+.nav-mobile{display:none;background:none;border:none;color:var(--text);cursor:pointer}
+
+/* HERO */
+.hero{min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:7rem 2rem 4rem;position:relative;overflow:hidden}
+.hero::before{content:'';position:absolute;top:-200px;left:50%;transform:translateX(-50%);width:800px;height:800px;background:radial-gradient(ellipse,rgba(41,181,232,0.08) 0%,transparent 70%);pointer-events:none}
+.hero-badge{display:inline-flex;align-items:center;gap:.5rem;background:var(--accent-glow);border:1px solid rgba(41,181,232,0.25);border-radius:100px;padding:.4rem 1.2rem;font-size:.78rem;font-weight:600;color:var(--accent);margin-bottom:1.5rem;letter-spacing:.03em;text-transform:uppercase}
+.hero h1{font-size:clamp(2.2rem,5vw,3.8rem);font-weight:800;line-height:1.1;max-width:900px;background:linear-gradient(135deg,#fff 30%,var(--accent));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+.hero .subtitle{font-size:clamp(1rem,2vw,1.25rem);color:var(--text2);max-width:700px;margin:1.2rem auto 2rem;font-weight:400}
+.format-badges{display:flex;flex-wrap:wrap;justify-content:center;gap:.6rem;margin-bottom:2rem}
+.format-badges span{background:var(--bg3);border:1px solid var(--card-border);border-radius:8px;padding:.35rem .9rem;font-size:.8rem;font-weight:500;color:var(--text2)}
+.hero-tagline{font-size:1.1rem;font-weight:600;color:var(--text);letter-spacing:.02em}
+.hero-tagline em{font-style:normal;color:var(--accent)}
+
+/* SECTIONS */
+section{padding:5rem 2rem}
+.section-inner{max-width:1200px;margin:0 auto}
+.section-label{display:inline-flex;align-items:center;gap:.4rem;font-size:.75rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--accent);margin-bottom:.75rem}
+.section-label .material-icons-round{font-size:1rem}
+.section-title{font-size:clamp(1.6rem,3vw,2.4rem);font-weight:700;margin-bottom:.5rem}
+.section-desc{color:var(--text2);max-width:640px;margin-bottom:2.5rem;font-size:.95rem}
+
+/* CARDS */
+.card{background:var(--bg2);border:1px solid var(--card-border);border-radius:var(--radius-lg);padding:1.75rem;transition:transform .25s,border-color .25s,box-shadow .25s}
+.card:hover{transform:translateY(-3px);border-color:rgba(41,181,232,0.2);box-shadow:0 8px 40px rgba(41,181,232,0.06)}
+
+/* ARCHITECTURE */
+.arch-section{background:var(--bg2)}
+.arch-container{background:var(--bg);border:1px solid var(--card-border);border-radius:var(--radius-lg);padding:2rem;overflow-x:auto}
+.arch-container svg{display:block;margin:0 auto;max-width:100%;height:auto}
+
+/* FLOW */
+.flow-section{background:var(--bg)}
+.flow-steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:1.25rem;counter-reset:step}
+.flow-step{position:relative;padding:1.5rem;background:var(--bg2);border:1px solid var(--card-border);border-radius:var(--radius);counter-increment:step}
+.flow-step::before{content:counter(step);position:absolute;top:-12px;left:16px;background:var(--accent);color:#000;font-weight:700;font-size:.75rem;width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center}
+.flow-step h4{font-size:.9rem;font-weight:600;margin-bottom:.35rem}
+.flow-step p{font-size:.8rem;color:var(--text2);line-height:1.5}
+
+/* FEATURES */
+.features-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:1.25rem}
+.feature-card .feature-icon{width:44px;height:44px;border-radius:10px;display:flex;align-items:center;justify-content:center;margin-bottom:1rem;font-size:1.3rem}
+.feature-card h3{font-size:1rem;font-weight:600;margin-bottom:.4rem}
+.feature-card p{font-size:.85rem;color:var(--text2);line-height:1.55}
+.icon-blue{background:var(--accent-glow);color:var(--accent)}
+.icon-green{background:var(--green-bg);color:var(--green)}
+.icon-purple{background:var(--purple-bg);color:var(--purple)}
+.icon-orange{background:var(--orange-bg);color:var(--orange)}
+
+/* TABLE */
+.benchmark-section{background:var(--bg2)}
+.bench-table{width:100%;border-collapse:collapse;font-size:.88rem}
+.bench-table thead{background:var(--bg3)}
+.bench-table th{padding:.85rem 1rem;text-align:left;font-weight:600;font-size:.78rem;text-transform:uppercase;letter-spacing:.05em;color:var(--text2);border-bottom:1px solid var(--card-border)}
+.bench-table td{padding:.8rem 1rem;border-bottom:1px solid var(--card-border);color:var(--text)}
+.bench-table tbody tr:hover{background:rgba(41,181,232,0.04)}
+.bench-table .mono{font-family:'JetBrains Mono',monospace;font-size:.82rem}
+
+/* OUTPUT TABLES */
+.output-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:1.5rem}
+.output-group h3{font-size:.9rem;font-weight:600;margin-bottom:.75rem;display:flex;align-items:center;gap:.4rem}
+.output-group h3 .dot{width:8px;height:8px;border-radius:50%;display:inline-block}
+.dot-purple{background:var(--purple)}
+.dot-orange{background:var(--orange)}
+.dot-green{background:var(--green)}
+.dot-blue{background:var(--accent)}
+.table-list{display:flex;flex-wrap:wrap;gap:.4rem}
+.table-list code{background:var(--bg3);border:1px solid var(--card-border);border-radius:6px;padding:.25rem .6rem;font-family:'JetBrains Mono',monospace;font-size:.78rem;color:var(--text2)}
+.output-note{margin-top:1.2rem;padding:1rem 1.25rem;background:var(--bg3);border-left:3px solid var(--orange);border-radius:0 8px 8px 0;font-size:.85rem;color:var(--text2);line-height:1.55}
+
+/* TECH STACK */
+.tech-grid{display:flex;flex-wrap:wrap;gap:1rem;justify-content:center}
+.tech-badge{display:flex;align-items:center;gap:.6rem;background:var(--bg2);border:1px solid var(--card-border);border-radius:var(--radius);padding:.75rem 1.25rem;font-size:.88rem;font-weight:500;transition:border-color .25s}
+.tech-badge:hover{border-color:rgba(41,181,232,0.3)}
+.tech-badge .tech-icon{width:32px;height:32px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:.9rem;font-weight:700}
+
+/* FOOTER */
+footer{border-top:1px solid var(--card-border);padding:3rem 2rem;text-align:center}
+footer .footer-links{display:flex;justify-content:center;gap:2rem;flex-wrap:wrap;margin-bottom:1rem}
+footer .footer-links a{font-size:.85rem;color:var(--text2)}
+footer .footer-links a:hover{color:var(--accent)}
+footer p{font-size:.8rem;color:var(--text3)}
+
+/* ANIMATIONS */
+.reveal{opacity:0;transform:translateY(24px);transition:opacity .6s ease,transform .6s ease}
+.reveal.visible{opacity:1;transform:translateY(0)}
+
+/* RESPONSIVE */
+@media(max-width:768px){
+  .nav-links{display:none}
+  .nav-mobile{display:block}
+  nav.open .nav-links{display:flex;flex-direction:column;position:absolute;top:64px;left:0;right:0;background:var(--bg);border-bottom:1px solid var(--card-border);padding:1rem 2rem;gap:1rem}
+  section{padding:3rem 1.25rem}
+  .hero{padding:6rem 1.25rem 3rem}
+  .output-grid{grid-template-columns:1fr}
+  .flow-steps{grid-template-columns:1fr 1fr}
+}
+@media(max-width:480px){
+  .flow-steps{grid-template-columns:1fr}
+  .features-grid{grid-template-columns:1fr}
+}
+</style>
+</head>
+<body>
+
+<!-- NAV -->
+<nav id="nav">
+  <div class="nav-inner">
+    <a href="#hero" class="nav-logo">
+      <svg viewBox="0 0 28 28" fill="none"><path d="M14 2L2 9v10l12 7 12-7V9L14 2z" stroke="#29B5E8" stroke-width="1.5" fill="rgba(41,181,232,0.1)"/><path d="M14 8l-6 3.5v7L14 22l6-3.5v-7L14 8z" fill="#29B5E8" opacity="0.6"/><path d="M14 12l-3 1.75v3.5L14 19l3-1.75v-3.5L14 12z" fill="#29B5E8"/></svg>
+      FHIR → OMOP/Tuva
+    </a>
+    <ul class="nav-links">
+      <li><a href="#architecture">Architecture</a></li>
+      <li><a href="#pipeline">Pipeline</a></li>
+      <li><a href="#features">Features</a></li>
+      <li><a href="#benchmarks">Benchmarks</a></li>
+      <li><a href="#omop-tables">OMOP Output</a></li>
+      <li><a href="#tuva-tables">Tuva Output</a></li>
+      <li><a href="#tech">Tech Stack</a></li>
+    </ul>
+    <button class="nav-mobile" onclick="document.getElementById('nav').classList.toggle('open')">
+      <span class="material-icons-round">menu</span>
+    </button>
+  </div>
+</nav>
+
+<!-- HERO -->
+<section class="hero" id="hero">
+  <div class="hero-badge">
+    <span class="material-icons-round" style="font-size:1rem">verified</span>
+    Snowflake Native App
+  </div>
+  <h1>HL7v2/FHIR to OMOP/Tuva Transformer</h1>
+  <p class="subtitle">Transform healthcare data from any format to analytics-ready models — entirely inside Snowflake.</p>
+  <div class="format-badges">
+    <span>HL7v2</span>
+    <span>FHIR R4 JSON</span>
+    <span>FHIR R4 XML</span>
+    <span>OMOP CDM v5.4</span>
+    <span>Tuva Input Layer</span>
+  </div>
+  <p class="hero-tagline"><em>One app.</em> Three input formats. <em>Two output models.</em> Zero infrastructure.</p>
+</section>
+
+<!-- ARCHITECTURE -->
+<section class="arch-section" id="architecture">
+  <div class="section-inner reveal">
+    <div class="section-label"><span class="material-icons-round">account_tree</span> Architecture</div>
+    <h2 class="section-title">End-to-End Data Flow</h2>
+    <p class="section-desc">Three healthcare data formats flow through a single Native App into two analytics-ready output models.</p>
+    <div class="arch-container">
+      <svg viewBox="0 0 1100 520" xmlns="http://www.w3.org/2000/svg" font-family="Inter, sans-serif">
+        <defs>
+          <marker id="ah" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="#475569"/></marker>
+          <marker id="ah-blue" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="#29B5E8"/></marker>
+          <filter id="glow"><feGaussianBlur stdDeviation="3" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+          <linearGradient id="sf-bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="rgba(41,181,232,0.04)"/><stop offset="100%" stop-color="rgba(41,181,232,0.01)"/></linearGradient>
+        </defs>
+
+        <!-- Snowflake background -->
+        <rect x="310" y="20" width="490" height="480" rx="20" fill="url(#sf-bg)" stroke="rgba(41,181,232,0.12)" stroke-width="1" stroke-dasharray="6 3"/>
+        <text x="555" y="50" text-anchor="middle" fill="rgba(41,181,232,0.2)" font-size="13" font-weight="600" letter-spacing="3">SNOWFLAKE</text>
+
+        <!-- INPUT SOURCES -->
+        <!-- HL7v2 -->
+        <rect x="30" y="80" width="220" height="80" rx="12" fill="#0d2818" stroke="#10b981" stroke-width="1.5"/>
+        <text x="140" y="112" text-anchor="middle" fill="#10b981" font-size="13" font-weight="700">HL7v2 Messages</text>
+        <text x="140" y="134" text-anchor="middle" fill="#6ee7b7" font-size="11">ADT, ORU, ORM, VXU, RDE</text>
+
+        <!-- FHIR JSON -->
+        <rect x="30" y="210" width="220" height="80" rx="12" fill="#0d2818" stroke="#10b981" stroke-width="1.5"/>
+        <text x="140" y="242" text-anchor="middle" fill="#10b981" font-size="13" font-weight="700">FHIR R4 JSON</text>
+        <text x="140" y="264" text-anchor="middle" fill="#6ee7b7" font-size="11">Bundles (21 resource types)</text>
+
+        <!-- FHIR XML -->
+        <rect x="30" y="340" width="220" height="80" rx="12" fill="#0d2818" stroke="#10b981" stroke-width="1.5"/>
+        <text x="140" y="372" text-anchor="middle" fill="#10b981" font-size="13" font-weight="700">FHIR R4 XML</text>
+        <text x="140" y="394" text-anchor="middle" fill="#6ee7b7" font-size="11">Bundles (21 resource types)</text>
+
+        <!-- ARROWS: inputs to app -->
+        <line x1="250" y1="120" x2="340" y2="200" stroke="#475569" stroke-width="1.5" marker-end="url(#ah)"/>
+        <line x1="250" y1="250" x2="340" y2="250" stroke="#475569" stroke-width="1.5" marker-end="url(#ah)"/>
+        <line x1="250" y1="380" x2="340" y2="300" stroke="#475569" stroke-width="1.5" marker-end="url(#ah)"/>
+
+        <!-- NATIVE APP BOX -->
+        <rect x="350" y="120" width="310" height="290" rx="16" fill="#111827" stroke="#29B5E8" stroke-width="2" filter="url(#glow)"/>
+        <text x="505" y="152" text-anchor="middle" fill="#29B5E8" font-size="14" font-weight="700">Native App</text>
+
+        <!-- Auto-Detect -->
+        <rect x="380" y="168" width="250" height="36" rx="8" fill="rgba(41,181,232,0.1)" stroke="rgba(41,181,232,0.3)" stroke-width="1"/>
+        <text x="505" y="191" text-anchor="middle" fill="#7dd3fc" font-size="12" font-weight="600">Auto-Detect Format</text>
+
+        <!-- Parse -->
+        <rect x="380" y="218" width="250" height="36" rx="8" fill="rgba(41,181,232,0.08)" stroke="rgba(41,181,232,0.2)" stroke-width="1"/>
+        <text x="505" y="241" text-anchor="middle" fill="#93c5fd" font-size="12" font-weight="500">Parse → FHIR R4 Resources</text>
+
+        <!-- Arrow down -->
+        <line x1="505" y1="254" x2="505" y2="276" stroke="#29B5E8" stroke-width="1" marker-end="url(#ah-blue)"/>
+
+        <!-- Fork into two paths -->
+        <!-- OMOP path -->
+        <rect x="380" y="282" width="115" height="50" rx="8" fill="rgba(167,139,250,0.1)" stroke="rgba(167,139,250,0.3)" stroke-width="1"/>
+        <text x="437" y="303" text-anchor="middle" fill="#c4b5fd" font-size="11" font-weight="600">23 OMOP</text>
+        <text x="437" y="320" text-anchor="middle" fill="#c4b5fd" font-size="11" font-weight="600">Mappers</text>
+
+        <!-- Tuva path -->
+        <rect x="515" y="282" width="115" height="50" rx="8" fill="rgba(245,158,11,0.1)" stroke="rgba(245,158,11,0.3)" stroke-width="1"/>
+        <text x="572" y="303" text-anchor="middle" fill="#fbbf24" font-size="11" font-weight="600">15 Tuva</text>
+        <text x="572" y="320" text-anchor="middle" fill="#fbbf24" font-size="11" font-weight="600">Mappers</text>
+
+        <!-- Vocab box -->
+        <rect x="380" y="348" width="250" height="36" rx="8" fill="rgba(255,255,255,0.03)" stroke="rgba(255,255,255,0.08)" stroke-width="1"/>
+        <text x="505" y="371" text-anchor="middle" fill="#64748b" font-size="11">SNOMED · LOINC · ICD-10 · RxNorm · CVX</text>
+
+        <!-- ARROWS: app to outputs -->
+        <line x1="660" y1="200" x2="760" y2="160" stroke="#475569" stroke-width="1.5" marker-end="url(#ah)"/>
+        <line x1="660" y1="310" x2="760" y2="370" stroke="#475569" stroke-width="1.5" marker-end="url(#ah)"/>
+
+        <!-- OUTPUT: OMOP -->
+        <rect x="770" y="90" width="290" height="120" rx="14" fill="#1a1033" stroke="#a78bfa" stroke-width="1.5"/>
+        <text x="915" y="124" text-anchor="middle" fill="#a78bfa" font-size="14" font-weight="700">OMOP CDM v5.4</text>
+        <text x="915" y="148" text-anchor="middle" fill="#c4b5fd" font-size="12">17 output tables</text>
+        <text x="915" y="172" text-anchor="middle" fill="#8b5cf6" font-size="11">OHDSI / Research Analytics</text>
+        <text x="915" y="194" text-anchor="middle" fill="#64748b" font-size="10">Cohort studies · Drug safety · Population health</text>
+
+        <!-- OUTPUT: Tuva -->
+        <rect x="770" y="310" width="290" height="140" rx="14" fill="#1a1508" stroke="#f59e0b" stroke-width="1.5"/>
+        <text x="915" y="344" text-anchor="middle" fill="#f59e0b" font-size="14" font-weight="700">Tuva Input Layer</text>
+        <text x="915" y="368" text-anchor="middle" fill="#fbbf24" font-size="12">15 output tables</text>
+        <text x="915" y="392" text-anchor="middle" fill="#d97706" font-size="11">Tuva Data Marts</text>
+        <text x="915" y="416" text-anchor="middle" fill="#64748b" font-size="10">HCC · CCSR · Readmissions · PMPM · Quality</text>
+        <text x="915" y="436" text-anchor="middle" fill="#64748b" font-size="10">Measures · Financial Analytics</text>
+
+        <!-- Legend -->
+        <rect x="30" y="465" width="12" height="12" rx="3" fill="#10b981"/>
+        <text x="48" y="476" fill="#94a3b8" font-size="11">Input Sources</text>
+        <rect x="160" y="465" width="12" height="12" rx="3" fill="#29B5E8"/>
+        <text x="178" y="476" fill="#94a3b8" font-size="11">Processing</text>
+        <rect x="280" y="465" width="12" height="12" rx="3" fill="#a78bfa"/>
+        <text x="298" y="476" fill="#94a3b8" font-size="11">OMOP Output</text>
+        <rect x="410" y="465" width="12" height="12" rx="3" fill="#f59e0b"/>
+        <text x="428" y="476" fill="#94a3b8" font-size="11">Tuva Output</text>
+      </svg>
+    </div>
+  </div>
+</section>
+
+<!-- PIPELINE FLOW -->
+<section class="flow-section" id="pipeline">
+  <div class="section-inner reveal">
+    <div class="section-label"><span class="material-icons-round">route</span> Pipeline</div>
+    <h2 class="section-title">Step-by-Step Data Flow</h2>
+    <p class="section-desc">From raw healthcare messages to analytics-ready tables in eight automated steps.</p>
+    <div class="flow-steps">
+      <div class="flow-step">
+        <h4>Load Source Data</h4>
+        <p>Consumer loads HL7v2 messages, FHIR JSON, or FHIR XML bundles into any Snowflake table.</p>
+      </div>
+      <div class="flow-step">
+        <h4>Auto-Detect Format</h4>
+        <p>App inspects the first bytes of each record — <code>MSH|</code>, <code>{</code>, or <code>&lt;</code> — to classify the format.</p>
+      </div>
+      <div class="flow-step">
+        <h4>Parse to FHIR R4</h4>
+        <p>HL7v2 segments are converted to FHIR resources. JSON/XML bundles are parsed directly. Batch inserts of 500.</p>
+      </div>
+      <div class="flow-step">
+        <h4>Store Resources</h4>
+        <p>Normalized FHIR R4 resources stored in <code>app_state.fhir_resources</code> with type, ID, and JSON payload.</p>
+      </div>
+      <div class="flow-step">
+        <h4>Select Output Model</h4>
+        <p>User chooses OMOP CDM v5.4 (research), Tuva Input Layer (analytics), or both via Streamlit UI.</p>
+      </div>
+      <div class="flow-step">
+        <h4>Run Mapper Pipeline</h4>
+        <p>23 OMOP or 15 Tuva mappers execute in sequence with real-time progress bar and per-step timing.</p>
+      </div>
+      <div class="flow-step">
+        <h4>Create Output Tables</h4>
+        <p>Output tables materialized in user-specified schema. Vocabulary crosswalks resolve terminology codes.</p>
+      </div>
+      <div class="flow-step">
+        <h4>Analytics Ready</h4>
+        <p>Query OMOP tables with OHDSI tools or feed Tuva tables into dbt for HCC, CCSR, readmissions, PMPM.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- FEATURES -->
+<section id="features">
+  <div class="section-inner reveal">
+    <div class="section-label"><span class="material-icons-round">auto_awesome</span> Features</div>
+    <h2 class="section-title">Built for Healthcare Data Teams</h2>
+    <p class="section-desc">Everything needed to transform, map, and analyze clinical data at scale.</p>
+    <div class="features-grid">
+      <div class="card feature-card">
+        <div class="feature-icon icon-green"><span class="material-icons-round">swap_horiz</span></div>
+        <h3>Multi-Format Input</h3>
+        <p>HL7v2, FHIR R4 JSON, FHIR R4 XML — auto-detected, no configuration needed. Supports 21 FHIR resource types and 10 HL7v2 segment types.</p>
+      </div>
+      <div class="card feature-card">
+        <div class="feature-icon icon-purple"><span class="material-icons-round">call_split</span></div>
+        <h3>Dual Output</h3>
+        <p>OMOP CDM v5.4 for OHDSI research cohorts and drug safety. Tuva Input Layer for HCC risk scoring, readmissions, and PMPM analytics.</p>
+      </div>
+      <div class="card feature-card">
+        <div class="feature-icon icon-blue"><span class="material-icons-round">speed</span></div>
+        <h3>Real-Time Progress</h3>
+        <p>Live progress bar with per-mapper timing and expandable pipeline log. Track every step of the 23-mapper pipeline as it runs.</p>
+      </div>
+      <div class="card feature-card">
+        <div class="feature-icon icon-blue"><span class="material-icons-round">cloud_done</span></div>
+        <h3>Snowflake Native</h3>
+        <p>Runs entirely inside Snowflake — no external compute, no data movement, no infrastructure to manage. Install and run.</p>
+      </div>
+      <div class="card feature-card">
+        <div class="feature-icon icon-green"><span class="material-icons-round">storefront</span></div>
+        <h3>Marketplace Ready</h3>
+        <p>Install from Snowflake Marketplace, grant access to your source table, and run. Five-minute setup, zero configuration files.</p>
+      </div>
+      <div class="card feature-card">
+        <div class="feature-icon icon-orange"><span class="material-icons-round">translate</span></div>
+        <h3>Vocabulary Mapping</h3>
+        <p>Built-in SNOMED, LOINC, ICD-10, RxNorm, and CVX terminology crosswalks. Extensible with OHDSI Athena vocabulary files.</p>
+      </div>
+      <div class="card feature-card">
+        <div class="feature-icon icon-purple"><span class="material-icons-round">bolt</span></div>
+        <h3>Batch Optimized</h3>
+        <p>UNION ALL batch inserts (500/batch) for high-throughput parsing. 1,000 FHIR bundles in ~65 seconds on X-Small warehouse.</p>
+      </div>
+      <div class="card feature-card">
+        <div class="feature-icon icon-orange"><span class="material-icons-round">table_chart</span></div>
+        <h3>Full OMOP CDM</h3>
+        <p>17 output tables covering clinical, health system, health economics, and derived domains. Complete CDM v5.4 specification coverage.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- BENCHMARKS -->
+<section class="benchmark-section" id="benchmarks">
+  <div class="section-inner reveal">
+    <div class="section-label"><span class="material-icons-round">timer</span> Performance</div>
+    <h2 class="section-title">Benchmark Results</h2>
+    <p class="section-desc">Tested on Snowflake X-Small warehouse. No tuning, no external compute.</p>
+    <div class="card" style="overflow-x:auto;padding:0">
+      <table class="bench-table">
+        <thead>
+          <tr><th>Source Format</th><th>Records</th><th>Warehouse</th><th>Duration</th><th>Output Records</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>FHIR R4 JSON</td>
+            <td class="mono">1,000 bundles</td>
+            <td>X-Small</td>
+            <td class="mono">~65 s</td>
+            <td class="mono">29,000+</td>
+          </tr>
+          <tr>
+            <td>FHIR R4 XML</td>
+            <td class="mono">5 bundles</td>
+            <td>X-Small</td>
+            <td class="mono">~120 s</td>
+            <td class="mono">~250</td>
+          </tr>
+          <tr>
+            <td>HL7v2</td>
+            <td class="mono">5 messages</td>
+            <td>X-Small</td>
+            <td class="mono">~111 s</td>
+            <td class="mono">~50</td>
+          </tr>
+          <tr>
+            <td>HL7v2</td>
+            <td class="mono">4,013 messages</td>
+            <td>X-Small</td>
+            <td class="mono">~270 s (4.5 min)</td>
+            <td class="mono">40,000+</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- OMOP OUTPUT TABLES -->
+<section id="omop-tables">
+  <div class="section-inner reveal">
+    <div class="section-label"><span class="material-icons-round">grid_view</span> OMOP CDM v5.4</div>
+    <h2 class="section-title">OMOP Output Tables</h2>
+    <p class="section-desc">17 tables across four domains — the full OMOP Common Data Model v5.4.</p>
+    <div class="output-grid">
+      <div class="card output-group">
+        <h3><span class="dot dot-purple"></span> Clinical Data (10 tables)</h3>
+        <div class="table-list">
+          <code>person</code>
+          <code>observation_period</code>
+          <code>condition_occurrence</code>
+          <code>measurement</code>
+          <code>visit_occurrence</code>
+          <code>drug_exposure</code>
+          <code>procedure_occurrence</code>
+          <code>device_exposure</code>
+          <code>observation</code>
+          <code>death</code>
+        </div>
+      </div>
+      <div class="card output-group">
+        <h3><span class="dot dot-blue"></span> Health System (3 tables)</h3>
+        <div class="table-list">
+          <code>location</code>
+          <code>care_site</code>
+          <code>provider</code>
+        </div>
+      </div>
+      <div class="card output-group">
+        <h3><span class="dot dot-green"></span> Health Economics (2 tables)</h3>
+        <div class="table-list">
+          <code>payer_plan_period</code>
+          <code>cost</code>
+        </div>
+      </div>
+      <div class="card output-group">
+        <h3><span class="dot dot-orange"></span> Derived / Metadata (2 tables)</h3>
+        <div class="table-list">
+          <code>fact_relationship</code>
+          <code>cdm_source</code>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- TUVA OUTPUT TABLES -->
+<section class="benchmark-section" id="tuva-tables">
+  <div class="section-inner reveal">
+    <div class="section-label"><span class="material-icons-round">hub</span> Tuva Input Layer</div>
+    <h2 class="section-title">Tuva Output Tables</h2>
+    <p class="section-desc">15 tables mapping directly to the Tuva Health Input Layer for downstream dbt analytics.</p>
+    <div class="output-grid">
+      <div class="card output-group">
+        <h3><span class="dot dot-purple"></span> Clinical (8 tables)</h3>
+        <div class="table-list">
+          <code>patient</code>
+          <code>encounter</code>
+          <code>condition</code>
+          <code>lab_result</code>
+          <code>medication</code>
+          <code>observation</code>
+          <code>procedure</code>
+          <code>immunization</code>
+        </div>
+      </div>
+      <div class="card output-group">
+        <h3><span class="dot dot-blue"></span> Administrative (3 tables)</h3>
+        <div class="table-list">
+          <code>location</code>
+          <code>practitioner</code>
+          <code>appointment</code>
+        </div>
+      </div>
+      <div class="card output-group">
+        <h3><span class="dot dot-green"></span> Claims (3 tables)</h3>
+        <div class="table-list">
+          <code>medical_claim</code>
+          <code>pharmacy_claim</code>
+          <code>eligibility</code>
+        </div>
+      </div>
+    </div>
+    <div class="output-note">
+      Output feeds directly into Tuva's dbt project for <strong>HCC risk scoring</strong>, <strong>CCSR categorization</strong>, <strong>readmission analytics</strong>, <strong>financial PMPM</strong>, and <strong>quality measures</strong>.
+    </div>
+  </div>
+</section>
+
+<!-- TECH STACK -->
+<section id="tech">
+  <div class="section-inner reveal" style="text-align:center">
+    <div class="section-label" style="justify-content:center"><span class="material-icons-round">layers</span> Technology Stack</div>
+    <h2 class="section-title">Built With</h2>
+    <p class="section-desc" style="margin-left:auto;margin-right:auto">Industry-standard tools for healthcare interoperability and analytics.</p>
+    <div class="tech-grid">
+      <div class="tech-badge">
+        <div class="tech-icon" style="background:var(--accent-glow);color:var(--accent)">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M12 2L2 7v10l10 5 10-5V7L12 2zm0 3l6 3-6 3-6-3 6-3z"/></svg>
+        </div>
+        Snowflake Native App
+      </div>
+      <div class="tech-badge">
+        <div class="tech-icon" style="background:rgba(55,118,171,0.15);color:#3776AB">Py</div>
+        Python / Snowpark
+      </div>
+      <div class="tech-badge">
+        <div class="tech-icon" style="background:rgba(255,75,75,0.12);color:#FF4B4B">St</div>
+        Streamlit in Snowflake
+      </div>
+      <div class="tech-badge">
+        <div class="tech-icon" style="background:var(--purple-bg);color:var(--purple)">OM</div>
+        OMOP CDM v5.4 (OHDSI)
+      </div>
+      <div class="tech-badge">
+        <div class="tech-icon" style="background:var(--orange-bg);color:var(--orange)">Tu</div>
+        Tuva Health Input Layer
+      </div>
+      <div class="tech-badge">
+        <div class="tech-icon" style="background:var(--green-bg);color:var(--green)">HL</div>
+        HL7 FHIR R4 / HL7v2
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- FOOTER -->
+<footer>
+  <div class="footer-links">
+    <a href="https://github.com/JacinthLaval/tuva-fhir-to-omop-app" target="_blank">
+      <span class="material-icons-round" style="font-size:1rem;vertical-align:middle;margin-right:.3rem">code</span>GitHub
+    </a>
+    <a href="#">Apache 2.0 License</a>
+    <a href="#">Snowflake Native App Framework</a>
+  </div>
+  <p>Built with Snowflake Native App Framework &middot; Vocabulary patterns from Tuva Health (Apache 2.0) + OHDSI Athena</p>
+  <p style="margin-top:.5rem;color:var(--text3)">&copy; 2026 HL7v2/FHIR to OMOP/Tuva Transformer</p>
+</footer>
+
+<script>
+// Sticky nav shadow
+const nav = document.getElementById('nav');
+window.addEventListener('scroll', () => {
+  nav.classList.toggle('scrolled', window.scrollY > 20);
+});
+
+// Scroll reveal
+const reveals = document.querySelectorAll('.reveal');
+const observer = new IntersectionObserver((entries) => {
+  entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('visible'); observer.unobserve(e.target); }});
+}, { threshold: 0.12 });
+reveals.forEach(el => observer.observe(el));
+
+// Active nav link
+const sections = document.querySelectorAll('section[id]');
+const navLinks = document.querySelectorAll('.nav-links a');
+window.addEventListener('scroll', () => {
+  let current = '';
+  sections.forEach(s => { if (window.scrollY >= s.offsetTop - 120) current = s.id; });
+  navLinks.forEach(a => {
+    a.classList.remove('active');
+    if (a.getAttribute('href') === '#' + current) a.classList.add('active');
+  });
+});
+</script>
+</body>
+</html>

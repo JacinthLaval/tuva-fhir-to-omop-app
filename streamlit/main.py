@@ -4,14 +4,14 @@ import pandas as pd
 import streamlit as st
 from snowflake.snowpark.context import get_active_session
 
-st.set_page_config(page_title="Tuva HL7v2/FHIR-to-OMOP", page_icon="🏥", layout="wide")
+st.set_page_config(page_title="HL7v2/FHIR to OMOP/Tuva", page_icon="🏥", layout="wide")
 
 session = get_active_session()
 
-st.title("Tuva HL7v2/FHIR to OMOP Transformer")
+st.title("HL7v2/FHIR to OMOP/Tuva Transformer")
 st.caption(
     "Vocabulary seeds from [Tuva Health](https://thetuvaproject.com/) (Apache 2.0) + "
-    "[OHDSI Athena](https://athena.ohdsi.org/) · OMOP mapping: custom-built · "
+    "[OHDSI Athena](https://athena.ohdsi.org/) · OMOP CDM v5.4 + Tuva Input Layer · "
     "HL7v2 + FHIR R4 (JSON & XML) auto-detected · "
     "Multi-cloud · Your data never leaves your account"
 )
@@ -110,7 +110,7 @@ with tab_config:
     with st.expander("First-time setup — grant access to your data", expanded=False):
         st.markdown("""
 This app runs with its own privileges. To allow it to read your HL7v2/FHIR source data
-and write OMOP output, you need to grant it access to the relevant database(s).
+and write OMOP/Tuva output, you need to grant it access to the relevant database(s).
 
 **Run these SQL statements** in a worksheet (replace the placeholders):
 """)
@@ -124,7 +124,7 @@ GRANT USAGE ON DATABASE {setup_db} TO APPLICATION {app_name};
 GRANT USAGE ON SCHEMA {setup_db}.{setup_schema} TO APPLICATION {app_name};
 GRANT SELECT ON TABLE {setup_db}.{setup_schema}.{setup_table} TO APPLICATION {app_name};
 
--- Grant write access for OMOP output (choose one):
+-- Grant write access for output (choose one):
 -- Option A: Let the app create schemas in your database
 GRANT CREATE SCHEMA ON DATABASE {setup_db} TO APPLICATION {app_name};
 -- Option B: Grant access to an existing output schema
@@ -223,7 +223,25 @@ CALL {app_name}.CORE.REGISTER_REFERENCE('FHIR_SOURCE_DATABASE', 'SET', '{setup_d
                 st.info("Table is empty or not accessible.")
 
     st.markdown("---")
-    st.subheader("OMOP output destination")
+    st.subheader("Output format")
+
+    format_options = ["OMOP CDM v5.4", "Tuva Input Layer"]
+    output_format = st.radio("Target data model", format_options, horizontal=True, key="cfg_output_format")
+    output_format_key = "OMOP" if output_format == "OMOP CDM v5.4" else "TUVA"
+
+    tuva_data_source = ""
+    if output_format_key == "TUVA":
+        tuva_data_source = st.text_input(
+            "Data source label",
+            value="fhir",
+            help="Tuva requires a data_source tag on every row. Use a short label like 'fhir', 'claims', 'ehr'.",
+            key="cfg_data_source",
+        )
+        st.caption("This label will be stamped on every Tuva output table for lineage tracking.")
+
+    st.markdown("---")
+    default_schema = "TUVA_INPUT" if output_format_key == "TUVA" else "OMOP_STAGING"
+    st.subheader("Output destination")
 
     out_col1, out_col2 = st.columns(2)
     with out_col1:
@@ -237,7 +255,7 @@ CALL {app_name}.CORE.REGISTER_REFERENCE('FHIR_SOURCE_DATABASE', 'SET', '{setup_d
 
         default_out_idx = None
         for i, s in enumerate(schema_options):
-            if s == 'OMOP_STAGING':
+            if s == default_schema:
                 default_out_idx = i
                 break
         if default_out_idx is None:
@@ -248,7 +266,7 @@ CALL {app_name}.CORE.REGISTER_REFERENCE('FHIR_SOURCE_DATABASE', 'SET', '{setup_d
                                           key="cfg_out_schema")
 
     if out_schema_choice == new_schema_label:
-        new_schema_name = st.text_input("New schema name", value="OMOP_STAGING",
+        new_schema_name = st.text_input("New schema name", value=default_schema,
                                          key="cfg_new_schema")
         output_schema = new_schema_name.upper().strip()
     else:
@@ -297,11 +315,20 @@ CALL {app_name}.CORE.REGISTER_REFERENCE('FHIR_SOURCE_DATABASE', 'SET', '{setup_d
             - {'Message' if detected_format == 'hl7v2' else 'Bundle'} ID: `{bundle_id_col if source_table else '—'}`
             """)
         with rev2:
-            st.markdown(f"""
-            **Destination**
-            - `{out_db}.{output_schema}`
-            - Tables: person, observation_period, condition_occurrence, measurement, visit_occurrence, drug_exposure, procedure_occurrence, device_exposure, observation, death, location, care_site, provider, payer_plan_period, cost, fact_relationship, cdm_source
-            """)
+            if output_format_key == "TUVA":
+                tuva_tables = "patient, encounter, condition, lab_result, medication, observation, procedure, immunization, location, practitioner, medical_claim, eligibility, appointment"
+                st.markdown(f"""
+                **Destination** *(Tuva Input Layer)*
+                - `{out_db}.{output_schema}`
+                - Data source: `{tuva_data_source}`
+                - Tables: {tuva_tables}
+                """)
+            else:
+                st.markdown(f"""
+                **Destination** *(OMOP CDM v5.4)*
+                - `{out_db}.{output_schema}`
+                - Tables: person, observation_period, condition_occurrence, measurement, visit_occurrence, drug_exposure, procedure_occurrence, device_exposure, observation, death, location, care_site, provider, payer_plan_period, cost, fact_relationship, cdm_source
+                """)
 
         if st.button("Save configuration", type="primary", use_container_width=True):
             try:
@@ -313,6 +340,8 @@ CALL {app_name}.CORE.REGISTER_REFERENCE('FHIR_SOURCE_DATABASE', 'SET', '{setup_d
                         UNION ALL SELECT 'bundle_id_column', '{bundle_id_col}'
                         UNION ALL SELECT 'output_schema', '{output_schema}'
                         UNION ALL SELECT 'output_database', '{out_db}'
+                        UNION ALL SELECT 'output_format', '{output_format_key}'
+                        UNION ALL SELECT 'data_source', '{tuva_data_source}'
                     ) s ON t.key = s.key
                     WHEN MATCHED THEN UPDATE SET value = s.value, updated_at = CURRENT_TIMESTAMP()
                     WHEN NOT MATCHED THEN INSERT (key, value) VALUES (s.key, s.value)
@@ -325,20 +354,22 @@ CALL {app_name}.CORE.REGISTER_REFERENCE('FHIR_SOURCE_DATABASE', 'SET', '{setup_d
         st.info("Select a source table and output schema above to continue.")
 
 with tab_run:
-    st.subheader("Run HL7v2/FHIR-to-OMOP transformation")
-
     config = load_config()
+    run_format = config.get('output_format', 'OMOP')
+    format_label = "Tuva Input Layer" if run_format == "TUVA" else "OMOP CDM v5.4"
+    st.subheader(f"Run HL7v2/FHIR → {format_label}")
 
     if config.get('source_table'):
         out_schema_display = config.get('output_schema', 'OMOP_STAGING')
         out_db_display = config.get('output_database', '')
         fq_out = f"{out_db_display}.{out_schema_display}" if out_db_display else out_schema_display
+        run_data_source = config.get('data_source', 'fhir')
 
         c1, c2, c3 = st.columns([2, 1, 1])
         with c1:
             st.markdown(f"**Source:** `{config['source_table']}`")
         with c2:
-            st.markdown(f"**→ Output:** `{fq_out}`")
+            st.markdown(f"**→ Output:** `{fq_out}` *({format_label})*")
         with c3:
             st.markdown(f"**Data col:** `{config.get('json_column', 'BUNDLE_DATA')}`")
 
@@ -347,11 +378,73 @@ with tab_run:
 
         st.markdown("---")
 
+        OMOP_PIPELINE = [
+            ("Parsing bundles", "core.parse_fhir_bundles", "parse"),
+            ("Mapping persons", "core.map_persons", "map"),
+            ("Mapping conditions", "core.map_conditions", "map"),
+            ("Mapping measurements", "core.map_measurements", "map"),
+            ("Mapping visits", "core.map_visits", "map"),
+            ("Mapping drug exposures", "core.map_drug_exposures", "map"),
+            ("Mapping procedures", "core.map_procedures", "map"),
+            ("Mapping observations", "core.map_observations_qual", "map"),
+            ("Mapping death records", "core.map_death", "map"),
+            ("Mapping immunizations", "core.map_immunizations", "map"),
+            ("Mapping med admin", "core.map_med_administrations", "map"),
+            ("Mapping allergies", "core.map_allergies", "map"),
+            ("Mapping devices", "core.map_devices", "map"),
+            ("Mapping diag reports", "core.map_diagnostic_reports", "map"),
+            ("Mapping imaging", "core.map_imaging_studies", "map"),
+            ("Mapping care plans", "core.map_care_plans", "map"),
+            ("Mapping locations", "core.map_locations", "map"),
+            ("Mapping organizations", "core.map_organizations", "map"),
+            ("Mapping practitioners", "core.map_practitioners", "map"),
+            ("Mapping claims/EOB", "core.map_claims", "map"),
+            ("Mapping care teams", "core.map_care_teams", "map"),
+            ("Building obs periods", "core.build_observation_periods", "map"),
+            ("Building CDM source", "core.build_cdm_source", "map"),
+        ]
+
+        TUVA_PIPELINE = [
+            ("Parsing bundles", "core.parse_fhir_bundles", "parse"),
+            ("Mapping patients", "core.map_tuva_patient", "tuva"),
+            ("Mapping encounters", "core.map_tuva_encounter", "tuva"),
+            ("Mapping conditions", "core.map_tuva_condition", "tuva"),
+            ("Mapping lab results", "core.map_tuva_lab_result", "tuva"),
+            ("Mapping observations", "core.map_tuva_observation", "tuva"),
+            ("Mapping medications", "core.map_tuva_medication", "tuva"),
+            ("Mapping immunizations", "core.map_tuva_immunization", "tuva"),
+            ("Mapping procedures", "core.map_tuva_procedure", "tuva"),
+            ("Mapping locations", "core.map_tuva_location", "tuva"),
+            ("Mapping practitioners", "core.map_tuva_practitioner", "tuva"),
+            ("Mapping medical claims", "core.map_tuva_medical_claim", "tuva"),
+            ("Mapping eligibility", "core.map_tuva_eligibility", "tuva"),
+            ("Mapping appointments", "core.map_tuva_appointment", "tuva"),
+        ]
+
+        OMOP_SUMMARY_TABLES = [
+            'person', 'observation_period', 'condition_occurrence', 'measurement',
+            'visit_occurrence', 'drug_exposure', 'procedure_occurrence',
+            'device_exposure', 'observation', 'death',
+            'location', 'care_site', 'provider',
+            'payer_plan_period', 'cost', 'fact_relationship', 'cdm_source',
+        ]
+
+        TUVA_SUMMARY_TABLES = [
+            'patient', 'encounter', 'condition', 'lab_result',
+            'observation', 'medication', 'immunization', 'procedure',
+            'location', 'practitioner', 'medical_claim',
+            'eligibility', 'appointment',
+        ]
+
+        pipeline_steps = TUVA_PIPELINE if run_format == "TUVA" else OMOP_PIPELINE
+        summary_tables = TUVA_SUMMARY_TABLES if run_format == "TUVA" else OMOP_SUMMARY_TABLES
+
         run_col1, run_col2 = st.columns([1, 2])
         with run_col1:
             run_btn = st.button("Run full pipeline", type="primary", use_container_width=True)
         with run_col2:
-            st.caption("Parse → Person → Condition → Measurement → Visit → Drug → Procedure → Observation → Death → Immunization → MedAdmin → Allergy → Device → DiagReport → Imaging → CarePlan → Location → Org → Practitioner → Claims → CareTeam → ObsPeriod → CDM Source")
+            step_names = " → ".join(s[0].split(" ", 1)[1].title() for s in pipeline_steps)
+            st.caption(step_names)
 
         if run_btn:
             import time as _time
@@ -365,33 +458,7 @@ with tab_run:
             except:
                 pass
 
-            pipeline_steps = [
-                ("Parsing bundles", "core.parse_fhir_bundles", "parse"),
-                ("Mapping persons", "core.map_persons", "map"),
-                ("Mapping conditions", "core.map_conditions", "map"),
-                ("Mapping measurements", "core.map_measurements", "map"),
-                ("Mapping visits", "core.map_visits", "map"),
-                ("Mapping drug exposures", "core.map_drug_exposures", "map"),
-                ("Mapping procedures", "core.map_procedures", "map"),
-                ("Mapping observations", "core.map_observations_qual", "map"),
-                ("Mapping death records", "core.map_death", "map"),
-                ("Mapping immunizations", "core.map_immunizations", "map"),
-                ("Mapping med admin", "core.map_med_administrations", "map"),
-                ("Mapping allergies", "core.map_allergies", "map"),
-                ("Mapping devices", "core.map_devices", "map"),
-                ("Mapping diag reports", "core.map_diagnostic_reports", "map"),
-                ("Mapping imaging", "core.map_imaging_studies", "map"),
-                ("Mapping care plans", "core.map_care_plans", "map"),
-                ("Mapping locations", "core.map_locations", "map"),
-                ("Mapping organizations", "core.map_organizations", "map"),
-                ("Mapping practitioners", "core.map_practitioners", "map"),
-                ("Mapping claims/EOB", "core.map_claims", "map"),
-                ("Mapping care teams", "core.map_care_teams", "map"),
-                ("Building obs periods", "core.build_observation_periods", "map"),
-                ("Building CDM source", "core.build_cdm_source", "map"),
-            ]
             total_steps = len(pipeline_steps)
-
             progress = st.progress(0, text="Starting pipeline…")
             log_expander = st.expander("Pipeline log", expanded=True)
             with log_expander:
@@ -413,6 +480,8 @@ with tab_run:
                             config.get('json_column', 'BUNDLE_DATA'),
                             config.get('bundle_id_column', 'BUNDLE_ID')
                         )
+                    elif kind == 'tuva':
+                        result = session.call(proc, config.get('output_schema', 'TUVA_INPUT'), run_data_source)
                     else:
                         result = session.call(proc, config.get('output_schema', 'OMOP_STAGING'))
                     elapsed = _time.time() - step_t
@@ -436,11 +505,7 @@ with tab_run:
 
             with st.expander("Output summary", expanded=True):
                 summary_data = []
-                for tbl in ['person', 'observation_period', 'condition_occurrence', 'measurement',
-                            'visit_occurrence', 'drug_exposure', 'procedure_occurrence',
-                            'device_exposure', 'observation', 'death',
-                            'location', 'care_site', 'provider',
-                            'payer_plan_period', 'cost', 'fact_relationship', 'cdm_source']:
+                for tbl in summary_tables:
                     try:
                         cnt = session.sql(
                             f"SELECT COUNT(*) AS c FROM {out_schema_display}.{tbl}"
@@ -453,18 +518,31 @@ with tab_run:
             try:
                 counts = {d['Table']: d['Rows'] for d in summary_data if isinstance(d.get('Rows'), (int, float))}
                 status = 'COMPLETED_WITH_ERRORS' if errors else 'COMPLETED'
-                session.sql(f"""
-                    UPDATE app_state.run_history SET
-                        status = '{status}',
-                        completed_at = CURRENT_TIMESTAMP(),
-                        fhir_bundles = {counts.get('person', 0)},
-                        persons_mapped = {counts.get('person', 0)},
-                        conditions_mapped = {counts.get('condition_occurrence', 0)},
-                        measurements_mapped = {counts.get('measurement', 0)},
-                        visits_mapped = {counts.get('visit_occurrence', 0)},
-                        errors = {len(errors)}
-                    WHERE run_id = '{run_id}'
-                """).collect()
+                if run_format == "TUVA":
+                    session.sql(f"""
+                        UPDATE app_state.run_history SET
+                            status = '{status}',
+                            completed_at = CURRENT_TIMESTAMP(),
+                            persons_mapped = {counts.get('patient', 0)},
+                            conditions_mapped = {counts.get('condition', 0)},
+                            measurements_mapped = {counts.get('lab_result', 0)},
+                            visits_mapped = {counts.get('encounter', 0)},
+                            errors = {len(errors)}
+                        WHERE run_id = '{run_id}'
+                    """).collect()
+                else:
+                    session.sql(f"""
+                        UPDATE app_state.run_history SET
+                            status = '{status}',
+                            completed_at = CURRENT_TIMESTAMP(),
+                            fhir_bundles = {counts.get('person', 0)},
+                            persons_mapped = {counts.get('person', 0)},
+                            conditions_mapped = {counts.get('condition_occurrence', 0)},
+                            measurements_mapped = {counts.get('measurement', 0)},
+                            visits_mapped = {counts.get('visit_occurrence', 0)},
+                            errors = {len(errors)}
+                        WHERE run_id = '{run_id}'
+                    """).collect()
             except:
                 pass
 
@@ -472,40 +550,19 @@ with tab_run:
         st.subheader("Individual mappers")
         st.caption("Run a single step of the pipeline for debugging or re-processing.")
 
-        mappers = [
-            ("Parse FHIR", "core.parse_fhir_bundles", "parse"),
-            ("Persons", "core.map_persons", "map"),
-            ("Conditions", "core.map_conditions", "map"),
-            ("Measurements", "core.map_measurements", "map"),
-            ("Visits", "core.map_visits", "map"),
-            ("Drugs", "core.map_drug_exposures", "map"),
-            ("Procedures", "core.map_procedures", "map"),
-            ("Observations", "core.map_observations_qual", "map"),
-            ("Death", "core.map_death", "map"),
-            ("Immunizations", "core.map_immunizations", "map"),
-            ("Med Admin", "core.map_med_administrations", "map"),
-            ("Allergies", "core.map_allergies", "map"),
-            ("Devices", "core.map_devices", "map"),
-            ("Diag Reports", "core.map_diagnostic_reports", "map"),
-            ("Imaging", "core.map_imaging_studies", "map"),
-            ("Care Plans", "core.map_care_plans", "map"),
-            ("Locations", "core.map_locations", "map"),
-            ("Organizations", "core.map_organizations", "map"),
-            ("Practitioners", "core.map_practitioners", "map"),
-            ("Claims/EOB", "core.map_claims", "map"),
-            ("Care Teams", "core.map_care_teams", "map"),
-            ("Obs Periods", "core.build_observation_periods", "map"),
-            ("CDM Source", "core.build_cdm_source", "map"),
-        ]
-        row1 = st.columns(5)
-        row2 = st.columns(5)
-        row3 = st.columns(5)
-        row4 = st.columns(5)
-        row5 = st.columns(3)
-        all_cols = row1 + row2 + row3 + row4 + row5
+        mappers = pipeline_steps[:]
+        cols_per_row = 5
+        rows_needed = (len(mappers) + cols_per_row - 1) // cols_per_row
+        all_cols = []
+        for _ in range(rows_needed - 1):
+            all_cols += st.columns(cols_per_row)
+        remaining = len(mappers) - (rows_needed - 1) * cols_per_row
+        if remaining > 0:
+            all_cols += st.columns(remaining)
+
         for i, (label, proc, kind) in enumerate(mappers):
             with all_cols[i]:
-                if st.button(label, use_container_width=True, key=f"mapper_{i}"):
+                if st.button(label.split(" ", 1)[1] if " " in label else label, use_container_width=True, key=f"mapper_{i}"):
                     with st.spinner(f"Running {label}…"):
                         try:
                             if kind == 'parse':
@@ -515,6 +572,8 @@ with tab_run:
                                     config.get('json_column', 'BUNDLE_DATA'),
                                     config.get('bundle_id_column', 'BUNDLE_ID')
                                 )
+                            elif kind == 'tuva':
+                                result = session.call(proc, config.get('output_schema', 'TUVA_INPUT'), run_data_source)
                             else:
                                 result = session.call(proc, config.get('output_schema', 'OMOP_STAGING'))
                             st.success(result)
@@ -628,89 +687,122 @@ COVERAGE_DOMAINS = {
 }
 
 with tab_coverage:
-    st.subheader("Coverage report")
-
     config = load_config()
+    cov_format = config.get('output_format', 'OMOP')
     cov_schema = config.get('output_schema', 'OMOP_STAGING')
 
-    coverage_data = []
-    for domain, info in COVERAGE_DOMAINS.items():
-        tbl = f"{cov_schema}.{info['table']}"
-        col = info['concept_col']
-        try:
-            row = session.sql(f"""
-                SELECT
-                    COUNT(*) AS total,
-                    SUM(CASE WHEN {col} > 0 THEN 1 ELSE 0 END) AS mapped,
-                    SUM(CASE WHEN {col} = 0 OR {col} IS NULL THEN 1 ELSE 0 END) AS unmapped
-                FROM {tbl}
-            """).collect()[0]
-            total = row['TOTAL'] or 0
-            mapped = row['MAPPED'] or 0
-            unmapped = row['UNMAPPED'] or 0
-            pct = round(mapped / total * 100, 1) if total > 0 else 0.0
-            coverage_data.append({"Domain": domain, "Total": total, "Mapped": mapped,
-                                  "Unmapped": unmapped, "Coverage %": pct})
-        except:
-            pass
+    if cov_format == "TUVA":
+        st.subheader("Tuva Input Layer — table summary")
+        st.caption("Tuva uses source codes directly — no concept_id coverage analysis needed.")
 
-    if coverage_data:
-        total_all = sum(d['Total'] for d in coverage_data)
-        mapped_all = sum(d['Mapped'] for d in coverage_data)
-        unmapped_all = sum(d['Unmapped'] for d in coverage_data)
-        overall_pct = round(mapped_all / total_all * 100, 1) if total_all > 0 else 0.0
-
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Total Rows", f"{total_all:,}")
-        m2.metric("Mapped", f"{mapped_all:,}")
-        m3.metric("Unmapped", f"{unmapped_all:,}")
-        m4.metric("Overall Coverage", f"{overall_pct}%")
-
-        chart_df = pd.DataFrame(coverage_data).set_index("Domain")[["Mapped", "Unmapped"]]
-        st.bar_chart(chart_df)
-
-        st.dataframe(pd.DataFrame(coverage_data), use_container_width=True, hide_index=True)
-
-        st.divider()
-        st.subheader("Top 20 Unmapped Source Codes by Domain")
-
-        SOURCE_CODE_MAP = {
-            "Condition": {"table": "condition_occurrence", "concept_col": "condition_concept_id",
-                          "source_col": "condition_source_value"},
-            "Measurement": {"table": "measurement", "concept_col": "measurement_concept_id",
-                            "source_col": "measurement_source_value"},
-            "Drug Exposure": {"table": "drug_exposure", "concept_col": "drug_concept_id",
-                              "source_col": "drug_source_value"},
-            "Visit": {"table": "visit_occurrence", "concept_col": "visit_concept_id",
-                      "source_col": "visit_source_value"},
-            "Procedure": {"table": "procedure_occurrence", "concept_col": "procedure_concept_id",
-                          "source_col": "procedure_source_value"},
-            "Observation": {"table": "observation", "concept_col": "observation_concept_id",
-                            "source_col": "observation_source_value"},
-            "Device": {"table": "device_exposure", "concept_col": "device_concept_id",
-                       "source_col": "device_source_value"},
-        }
-
-        for domain, info in SOURCE_CODE_MAP.items():
-            tbl = f"{cov_schema}.{info['table']}"
-            col = info['concept_col']
-            src = info['source_col']
+        tuva_tables_cov = [
+            ('patient', 'source_code'), ('encounter', 'source_code'), ('condition', 'source_code'),
+            ('lab_result', 'source_code'), ('observation', 'source_code'),
+            ('medication', 'source_code'), ('immunization', 'source_code'),
+            ('procedure', 'source_code'), ('location', 'name'),
+            ('practitioner', 'npi'), ('medical_claim', 'hcpcs_code'),
+            ('eligibility', 'payer'), ('appointment', 'source_code'),
+        ]
+        tuva_cov_data = []
+        for tbl, code_col in tuva_tables_cov:
             try:
-                unmapped_df = session.sql(f"""
-                    SELECT {src} AS source_code, COUNT(*) AS occurrences
-                    FROM {tbl}
-                    WHERE ({col} = 0 OR {col} IS NULL) AND {src} IS NOT NULL
-                    GROUP BY {src}
-                    ORDER BY occurrences DESC
-                    LIMIT 20
-                """).to_pandas()
-                if len(unmapped_df) > 0:
-                    with st.expander(f"{domain} — {len(unmapped_df)} unmapped codes"):
-                        st.dataframe(unmapped_df, use_container_width=True, hide_index=True)
+                row = session.sql(f"""
+                    SELECT COUNT(*) AS total,
+                           SUM(CASE WHEN {code_col} IS NOT NULL AND {code_col} != '' THEN 1 ELSE 0 END) AS with_code
+                    FROM {cov_schema}.{tbl}
+                """).collect()[0]
+                total = row['TOTAL'] or 0
+                coded = row['WITH_CODE'] or 0
+                pct = round(coded / total * 100, 1) if total > 0 else 0.0
+                tuva_cov_data.append({"Table": tbl, "Total Rows": total, "With Code": coded, "Code %": pct})
             except:
                 pass
+
+        if tuva_cov_data:
+            st.dataframe(pd.DataFrame(tuva_cov_data), use_container_width=True, hide_index=True)
+        else:
+            st.info("No Tuva tables found. Run the transformation first.")
     else:
-        st.info("No OMOP tables found. Run the transformation first to see coverage metrics.")
+        st.subheader("Coverage report")
+
+        coverage_data = []
+        for domain, info in COVERAGE_DOMAINS.items():
+            tbl = f"{cov_schema}.{info['table']}"
+            col = info['concept_col']
+            try:
+                row = session.sql(f"""
+                    SELECT
+                        COUNT(*) AS total,
+                        SUM(CASE WHEN {col} > 0 THEN 1 ELSE 0 END) AS mapped,
+                        SUM(CASE WHEN {col} = 0 OR {col} IS NULL THEN 1 ELSE 0 END) AS unmapped
+                    FROM {tbl}
+                """).collect()[0]
+                total = row['TOTAL'] or 0
+                mapped = row['MAPPED'] or 0
+                unmapped = row['UNMAPPED'] or 0
+                pct = round(mapped / total * 100, 1) if total > 0 else 0.0
+                coverage_data.append({"Domain": domain, "Total": total, "Mapped": mapped,
+                                      "Unmapped": unmapped, "Coverage %": pct})
+            except:
+                pass
+
+        if coverage_data:
+            total_all = sum(d['Total'] for d in coverage_data)
+            mapped_all = sum(d['Mapped'] for d in coverage_data)
+            unmapped_all = sum(d['Unmapped'] for d in coverage_data)
+            overall_pct = round(mapped_all / total_all * 100, 1) if total_all > 0 else 0.0
+
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Total Rows", f"{total_all:,}")
+            m2.metric("Mapped", f"{mapped_all:,}")
+            m3.metric("Unmapped", f"{unmapped_all:,}")
+            m4.metric("Overall Coverage", f"{overall_pct}%")
+
+            chart_df = pd.DataFrame(coverage_data).set_index("Domain")[["Mapped", "Unmapped"]]
+            st.bar_chart(chart_df)
+
+            st.dataframe(pd.DataFrame(coverage_data), use_container_width=True, hide_index=True)
+
+            st.divider()
+            st.subheader("Top 20 Unmapped Source Codes by Domain")
+
+            SOURCE_CODE_MAP = {
+                "Condition": {"table": "condition_occurrence", "concept_col": "condition_concept_id",
+                              "source_col": "condition_source_value"},
+                "Measurement": {"table": "measurement", "concept_col": "measurement_concept_id",
+                                "source_col": "measurement_source_value"},
+                "Drug Exposure": {"table": "drug_exposure", "concept_col": "drug_concept_id",
+                                  "source_col": "drug_source_value"},
+                "Visit": {"table": "visit_occurrence", "concept_col": "visit_concept_id",
+                          "source_col": "visit_source_value"},
+                "Procedure": {"table": "procedure_occurrence", "concept_col": "procedure_concept_id",
+                              "source_col": "procedure_source_value"},
+                "Observation": {"table": "observation", "concept_col": "observation_concept_id",
+                                "source_col": "observation_source_value"},
+                "Device": {"table": "device_exposure", "concept_col": "device_concept_id",
+                           "source_col": "device_source_value"},
+            }
+
+            for domain, info in SOURCE_CODE_MAP.items():
+                tbl = f"{cov_schema}.{info['table']}"
+                col = info['concept_col']
+                src = info['source_col']
+                try:
+                    unmapped_df = session.sql(f"""
+                        SELECT {src} AS source_code, COUNT(*) AS occurrences
+                        FROM {tbl}
+                        WHERE ({col} = 0 OR {col} IS NULL) AND {src} IS NOT NULL
+                        GROUP BY {src}
+                        ORDER BY occurrences DESC
+                        LIMIT 20
+                    """).to_pandas()
+                    if len(unmapped_df) > 0:
+                        with st.expander(f"{domain} — {len(unmapped_df)} unmapped codes"):
+                            st.dataframe(unmapped_df, use_container_width=True, hide_index=True)
+                except:
+                    pass
+        else:
+            st.info("No OMOP tables found. Run the transformation first to see coverage metrics.")
 
 
 with tab_quality:
@@ -774,45 +866,67 @@ with tab_quality:
 
 
 with tab_explore:
-    st.subheader("Explore OMOP CDM output")
-
     config = load_config()
+    explore_format = config.get('output_format', 'OMOP')
     out_schema = config.get('output_schema', 'OMOP_STAGING')
 
-    omop_tables = ['person', 'observation_period', 'condition_occurrence', 'measurement',
-                   'visit_occurrence', 'drug_exposure', 'procedure_occurrence',
-                   'device_exposure', 'observation', 'death',
-                   'location', 'care_site', 'provider',
-                   'payer_plan_period', 'cost', 'fact_relationship', 'cdm_source']
+    if explore_format == "TUVA":
+        st.subheader("Explore Tuva Input Layer output")
+        all_tables = [
+            'patient', 'encounter', 'condition', 'lab_result',
+            'observation', 'medication', 'immunization', 'procedure',
+            'location', 'practitioner', 'medical_claim',
+            'eligibility', 'appointment',
+        ]
+    else:
+        st.subheader("Explore OMOP CDM output")
+        all_tables = [
+            'person', 'observation_period', 'condition_occurrence', 'measurement',
+            'visit_occurrence', 'drug_exposure', 'procedure_occurrence',
+            'device_exposure', 'observation', 'death',
+            'location', 'care_site', 'provider',
+            'payer_plan_period', 'cost', 'fact_relationship', 'cdm_source',
+        ]
 
-    exp_col1, exp_col2 = st.columns([1, 2])
-    with exp_col1:
-        selected_table = st.selectbox("OMOP Table", omop_tables, key="explore_table")
-    with exp_col2:
-        row_limit = st.slider("Rows to display", min_value=10, max_value=500, value=100, step=10)
-
-    if selected_table:
+    available_tables = []
+    for tbl in all_tables:
         try:
-            count = session.sql(
-                f"SELECT COUNT(*) AS cnt FROM {out_schema}.{selected_table}"
-            ).collect()[0]['CNT']
+            session.sql(f"SELECT 1 FROM {out_schema}.{tbl} LIMIT 0").collect()
+            available_tables.append(tbl)
+        except:
+            pass
 
-            st.caption(f"**{selected_table}** — {count:,} total rows (showing up to {row_limit})")
+    if not available_tables:
+        st.info("No output tables found. Run the transformation first.")
+    else:
+        exp_col1, exp_col2 = st.columns([1, 2])
+        with exp_col1:
+            selected_table = st.selectbox("Table", available_tables, key="explore_table")
+        with exp_col2:
+            row_limit = st.slider("Rows to display", min_value=10, max_value=500, value=100, step=10)
 
-            df = session.sql(
-                f"SELECT * FROM {out_schema}.{selected_table} LIMIT {row_limit}"
-            ).to_pandas()
-            st.dataframe(df, use_container_width=True, hide_index=True)
-        except Exception as e:
-            st.info(f"Table `{out_schema}.{selected_table}` not yet created. Run the transformation first.")
+        if selected_table:
+            try:
+                count = session.sql(
+                    f"SELECT COUNT(*) AS cnt FROM {out_schema}.{selected_table}"
+                ).collect()[0]['CNT']
+
+                st.caption(f"**{selected_table}** — {count:,} total rows (showing up to {row_limit})")
+
+                df = session.sql(
+                    f"SELECT * FROM {out_schema}.{selected_table} LIMIT {row_limit}"
+                ).to_pandas()
+                st.dataframe(df, use_container_width=True, hide_index=True)
+            except Exception as e:
+                st.info(f"Table `{out_schema}.{selected_table}` not yet created. Run the transformation first.")
 
 
 st.divider()
 st.caption(
-    "Tuva HL7v2/FHIR-to-OMOP · "
+    "HL7v2/FHIR to OMOP/Tuva · "
     "Vocabulary: [Tuva Health](https://thetuvaproject.com/) (Apache 2.0) + "
     "[OHDSI Athena](https://athena.ohdsi.org/) · "
-    "OMOP CDM mapping: custom-built · "
+    "OMOP CDM v5.4 + Tuva Input Layer · "
     "HL7v2 + FHIR R4 (JSON & XML) · "
     "Built on [Snowflake](https://www.snowflake.com/) · "
     "Multi-cloud: AWS | Azure | GCP"
